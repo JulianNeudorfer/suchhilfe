@@ -7,16 +7,18 @@
    genommen. So ist die App auf der Baustelle ohne Empfang sofort da und
    trotzdem aktuell, sobald wieder Netz da ist. */
 
-var LAGER = 'suchhilfe-1';
-var DATEIEN = ['./', './index.html'];
-var WARTEN_MS = 2500;
+var LAGER = 'suchhilfe-2';
+var DATEIEN = ['./', './index.html', './plan.pdf'];
 
 self.addEventListener('install', function(e){
   e.waitUntil(
-    caches.open(LAGER)
-      .then(function(c){ return c.addAll(DATEIEN); })
-      .then(function(){ return self.skipWaiting(); })
-      .catch(function(){})
+    caches.open(LAGER).then(function(c){
+      /* Einzeln ablegen statt addAll: fehlt eine Datei (z. B. plan.pdf),
+         soll trotzdem alles andere im Gerät landen. */
+      return Promise.all(DATEIEN.map(function(d){
+        return c.add(d).catch(function(){});
+      }));
+    }).then(function(){ return self.skipWaiting(); }).catch(function(){})
   );
 });
 
@@ -30,38 +32,54 @@ self.addEventListener('activate', function(e){
   );
 });
 
-function ausDemNetz(anfrage){
-  return new Promise(function(ok, fehler){
-    var fertig = false;
-    var uhr = setTimeout(function(){
-      if(!fertig){ fertig = true; fehler(new Error('zu langsam')); }
-    }, WARTEN_MS);
-    fetch(anfrage).then(function(antwort){
-      if(fertig) return;
-      fertig = true; clearTimeout(uhr); ok(antwort);
-    }, function(e){
-      if(fertig) return;
-      fertig = true; clearTimeout(uhr); fehler(e);
-    });
-  });
-}
-
+/* Gespeichertes sofort ausliefern, parallel im Hintergrund nachsehen, ob es
+   etwas Neues gibt. Dadurch startet die App ohne jede Wartezeit - auch mit
+   schlechtem Empfang. Eine neue Fassung ist beim übernächsten Öffnen aktiv. */
 self.addEventListener('fetch', function(e){
   if(e.request.method !== 'GET') return;
   var ziel = new URL(e.request.url);
   if(ziel.origin !== location.origin) return;
 
   e.respondWith(
-    ausDemNetz(e.request).then(function(antwort){
-      if(antwort && antwort.ok){
-        var kopie = antwort.clone();
-        caches.open(LAGER).then(function(c){ c.put(e.request, kopie); }).catch(function(){});
-      }
-      return antwort;
-    }).catch(function(){
-      return caches.match(e.request).then(function(treffer){
-        return treffer || caches.match('./index.html');
+    caches.match(e.request).then(function(gespeichert){
+      var ausDemNetz = fetch(e.request).then(function(antwort){
+        if(antwort && antwort.ok){
+          if(gespeichert && istSeite(e.request) && hatSichGeaendert(gespeichert, antwort)){
+            melden({ typ: 'neueFassung' });
+          }
+          var kopie = antwort.clone();
+          caches.open(LAGER).then(function(c){ c.put(e.request, kopie); }).catch(function(){});
+        }
+        return antwort;
+      }).catch(function(){
+        return gespeichert || caches.match('./index.html');
       });
+      return gespeichert || ausDemNetz;
     })
   );
 });
+
+function istSeite(anfrage){
+  return anfrage.mode === 'navigate' ||
+         /(\/|\.html)$/.test(new URL(anfrage.url).pathname);
+}
+
+function kennzeichen(antwort){
+  return antwort.headers.get('ETag') ||
+         antwort.headers.get('Last-Modified') ||
+         antwort.headers.get('Content-Length') || '';
+}
+
+function hatSichGeaendert(alt, neu){
+  var a = kennzeichen(alt), b = kennzeichen(neu);
+  return !!a && !!b && a !== b;
+}
+
+/* Der Seite Bescheid geben, dass eine neue Fassung bereitliegt - sonst
+   sieht man beim nächsten Öffnen unbemerkt noch die alte. */
+function melden(nachricht){
+  self.clients.matchAll({ includeUncontrolled: true, type: 'window' })
+    .then(function(fenster){
+      fenster.forEach(function(f){ f.postMessage(nachricht); });
+    }).catch(function(){});
+}

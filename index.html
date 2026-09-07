@@ -135,7 +135,9 @@
   .empty b{color:var(--tx); font-weight:600}
 
   /* ---------- Ansicht ---------- */
-  section.view{flex:1; display:flex; flex-direction:column; min-width:0}
+  /* min-height:0 ist Pflicht: ohne das wächst der Plan-Bereich am Handy auf
+     die volle Höhe des gezoomten Plans, statt innen zu scrollen. */
+  section.view{flex:1; display:flex; flex-direction:column; min-width:0; min-height:0}
   .tools{
     display:flex; align-items:center; gap:6px; padding:8px 12px; flex-wrap:wrap;
     background:var(--bg2); border-bottom:1px solid var(--line);
@@ -153,10 +155,22 @@
     padding:6px 8px; outline:none; font-size:12.5px;
   }
   .tools .farblbl{color:var(--tx2); font-size:12.5px; margin-left:4px}
+  .tools .btn.klein{padding:6px 11px; font-size:12.5px; margin-left:auto}
+
+  /* „Nur Plan": Kopfzeile und Seitenleiste weg, der Plan bekommt alles.
+     Die Werkzeugleiste bleibt - sonst gäbe es keinen Weg zurück. */
+  body.nurplan header, body.nurplan aside{display:none}
+  body.nurplan #nurplan{background:var(--acc); border-color:var(--acc); color:#241300; font-weight:600}
+  body.startbildschirm.nurplan .tools{padding-top:calc(8px + env(safe-area-inset-top))}
   .tools input[type=range]{
     width:110px; accent-color:var(--mk); background:none; border:none; padding:0;
   }
-  #stage{flex:1; overflow:auto; position:relative; background:#0c0e13; touch-action:none}
+  #neu{
+    display:flex; align-items:center; gap:12px; padding:8px 14px; font-size:13px;
+    background:#3a2a12; border-bottom:1px solid var(--acc); color:var(--tx);
+  }
+  #neu .btn{padding:5px 10px; font-size:12.5px; margin-left:auto}
+  #stage{flex:1; min-height:0; overflow:auto; position:relative; background:#0c0e13; touch-action:none}
   #sheet{position:relative; margin:20px auto; background:#fff; box-shadow:0 8px 40px rgba(0,0,0,.6)}
   #sheet canvas{position:absolute; top:0; left:0}
   #over{pointer-events:none}
@@ -299,6 +313,12 @@
       </select>
       <span class="farblbl">Größe</span>
       <input type="range" id="groesse" min="0" max="100" value="15" title="Größe der Markierung">
+      <button class="btn klein" id="nurplan" title="Kopfzeile und Suchfeld ausblenden - der Plan bekommt den ganzen Platz">Nur Plan</button>
+    </div>
+
+    <div id="neu" hidden>
+      Eine neuere Fassung liegt bereit.
+      <button class="btn" id="neuladen">Jetzt übernehmen</button>
     </div>
 
     <div id="stage">
@@ -309,6 +329,7 @@
       <div class="placeholder" id="ph">
         <b>PDF hierher ziehen</b>
         <div>oder oben „PDF öffnen“ — die Datei bleibt auf deinem Gerät,<br>es wird nichts hochgeladen.</div>
+        <div style="font-size:12px;opacity:.75">Liegt eine Datei namens <b>plan.pdf</b> im selben<br>Ordner, öffnet sie sich beim Start von selbst.</div>
       </div>
     </div>
   </section>
@@ -328,6 +349,15 @@
    bevor das Skript irgendetwas am Inhalt ändert. */
 var PRISTINE = '<!doctype html>\n' + document.documentElement.outerHTML;
 
+/* ====== Fester Plan ======================================================
+   Liegt eine PDF mit diesem Namen im selben Ordner wie diese Datei, wird
+   sie beim Öffnen automatisch geladen - kein Auswählen mehr nötig.
+   Heißt deine Datei anders, entweder sie in plan.pdf umbenennen oder hier
+   den Namen eintragen. Funktioniert nur über eine Web-Adresse; bei einer
+   doppelt angeklickten Datei sperrt der Browser das Nachladen.
+   ======================================================================== */
+var PLAN_DATEI = 'plan.pdf';
+
 var CDN_WORKER = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
 var $ = function(s){ return document.querySelector(s); };
 
@@ -344,6 +374,7 @@ var pageGeom = null;        // {items, offs} der aktuellen Seite
 var pageHits = [];          // Treffer der aktuellen Seite
 var renderTask = null, renderTimer = null, searchTimer = null;
 var dpr = Math.min(window.devicePixelRatio || 1, 2);
+var ZEIT = { start: (window.performance ? performance.now() : 0) };  // Messpunkte
 var planBytes = null;       // Kopie der PDF-Daten (zum Einbauen)
 var oeffnetGerade = false;  // gerade wird schon eine PDF geöffnet
 
@@ -513,6 +544,7 @@ function openData(buf, quelle){
     return Promise.resolve();
   }
   oeffnetGerade = true;
+  geomSpeicher = {}; geomReihe = [];
   hits = []; hitIdx = -1; pagesRaw = []; pageObj = null; pageGeom = null; pageHits = [];
   docHasText = false; emptyNote = '';
   renderResults();
@@ -535,10 +567,18 @@ function openData(buf, quelle){
     $('#bake').disabled = !planBytes;
     $('#ph').style.display = 'none';
     sheet.style.display = 'block';
-    return scanAll();
-  }).then(function(){
+    /* Erst den Plan zeigen, dann den Text einlesen - so ist sofort etwas
+       da, statt auf alle Seiten zu warten. */
     return showPage(1);
   }).then(function(){
+    ZEIT.planSichtbar = performance.now();
+    return textHolen();
+  }).then(function(schonDa){
+    ZEIT.ausSpeicher = !!schonDa;
+    if(schonDa) return;
+    return scanAll().then(textMerken);
+  }).then(function(){
+    ZEIT.suchbereit = performance.now();
     if(quelle === 'datei' && planBytes) planMerken($('#docname').textContent, planBytes);
     if(!('ontouchstart' in window)) $('#q').focus();
     if($('#q').value.trim()) search();
@@ -550,6 +590,57 @@ function openData(buf, quelle){
     }
     console.error(e);
   });
+}
+
+/* ---------------- Eingelesenen Text aufbewahren ----------------
+   Der Plan ändert sich nicht, der Text darin also auch nicht. Beim ersten
+   Mal wird er eingelesen und abgelegt, danach ist er sofort da - das spart
+   bei jedem weiteren Öffnen das Einlesen aller Seiten. */
+function planKennung(){
+  if(!planBytes || !planBytes.length) return null;
+  var n = planBytes.length, h = n >>> 0;
+  var schritt = Math.max(1, Math.floor(n / 512));
+  for(var i = 0; i < n; i += schritt) h = (h * 31 + planBytes[i]) >>> 0;
+  return 'text-' + n + '-' + h;
+}
+
+function textHolen(){
+  var k = planKennung();
+  if(!k || !pdfDoc) return Promise.resolve(false);
+  return new Promise(function(ok){
+    try{
+      dbOeffnen().then(function(db){
+        var rq = db.transaction('plan', 'readonly').objectStore('plan').get(k);
+        rq.onsuccess = function(){
+          var e = rq.result;
+          if(e && e.seiten && e.seiten.length === pdfDoc.numPages){
+            pagesRaw = e.seiten;
+            docHasText = e.zeichen > 0;
+            setStatus(docHasText
+              ? pagesRaw.length + ' Seiten · ' + e.zeichen.toLocaleString('de-AT') + ' Zeichen Text.'
+              : 'Achtung: keine Textebene gefunden - die Suche findet hier nichts.');
+            ok(true);
+          } else ok(false);
+        };
+        rq.onerror = function(){ ok(false); };
+      }).catch(function(){ ok(false); });
+    }catch(e){ ok(false); }
+  });
+}
+
+function textMerken(){
+  var k = planKennung();
+  if(!k || !pagesRaw.length) return;
+  var zeichen = 0;
+  for(var i = 0; i < pagesRaw.length; i++){
+    zeichen += (pagesRaw[i] || '').replace(/\s+/g,'').length;
+  }
+  try{
+    dbOeffnen().then(function(db){
+      db.transaction('plan', 'readwrite').objectStore('plan')
+        .put({ seiten: pagesRaw, zeichen: zeichen }, k);
+    }).catch(function(){});
+  }catch(e){}
 }
 
 /* ---------------- Text aller Seiten einlesen ---------------- */
@@ -574,7 +665,9 @@ function scanAll(){
         pagesRaw[cur-1] = raw;
         chars += raw.replace(/\s+/g,'').length;
         page.cleanup();
-        if(cur % 2 === 0 || cur === total){
+        /* Seltener Luft holen als früher: jede Pause kostet ein paar
+           Millisekunden, bei vielen Seiten summiert sich das. */
+        if(cur % 8 === 0 || cur === total){
           setStatus('Text wird eingelesen … Seite ' + cur + ' / ' + total, cur/total);
           return new Promise(function(r){ setTimeout(r, 0); }).then(step);
         }
@@ -787,26 +880,47 @@ function showPage(n){
   $('#pgin').value = n;
   return pdfDoc.getPage(n).then(function(page){
     pageObj = page;
-    pageGeom = null; pageHits = [];
-    return page.getTextContent().then(function(tc){
-      /* Gleiche Reihenfolge wie beim Einlesen -> die gespeicherten
-         Textpositionen der Treffer passen 1:1 auf diese Items. */
-      var items = tc.items, offs = new Array(items.length), pos = 0;
-      for(var i=0;i<items.length;i++){ offs[i] = pos; pos += items[i].str.length + 1; }
-      pageGeom = { items: items, offs: offs };
-      syncPageHits();
-      layout();
-    });
+    pageGeom = null;
+    syncPageHits();
+    layout(true);                 // Plan sofort zeichnen, ohne auf den Text zu warten
+    return geomFuer(page, n);
+  }).then(function(g){
+    if(pageNo !== n) return;      // inzwischen weitergeblättert
+    pageGeom = g;
+    syncPageHits();
+    drawOverlay();                // Markierungen nachziehen
   });
 }
 
-function layout(){
+/* Textteile der zuletzt angesehenen Seiten aufheben - Springen zwischen
+   Treffern muss sie dann nicht jedes Mal neu holen. */
+var geomSpeicher = {}, geomReihe = [];
+
+function geomFuer(page, n){
+  if(geomSpeicher[n]) return Promise.resolve(geomSpeicher[n]);
+  return page.getTextContent().then(function(tc){
+    /* Gleiche Reihenfolge wie beim Einlesen -> die gespeicherten
+       Textpositionen der Treffer passen 1:1 auf diese Items. */
+    var items = tc.items, offs = new Array(items.length), pos = 0;
+    for(var i=0;i<items.length;i++){ offs[i] = pos; pos += items[i].str.length + 1; }
+    var g = { items: items, offs: offs };
+    geomSpeicher[n] = g;
+    geomReihe.push(n);
+    while(geomReihe.length > 12) delete geomSpeicher[geomReihe.shift()];
+    return g;
+  });
+}
+
+function layout(sofort){
   if(!pageObj) return;
   var vp = pageObj.getViewport({ scale: scale });
   sheet.style.width  = Math.round(vp.width)  + 'px';
   sheet.style.height = Math.round(vp.height) + 'px';
   $('#zlbl').textContent = Math.round(scale*100) + ' %';
-  scheduleRender();
+  /* Beim Seitenwechsel ohne Verzögerung zeichnen; beim Scrollen und Zoomen
+     bleibt die kurze Sammelpause, sonst würde ständig neu gerechnet. */
+  if(sofort){ clearTimeout(renderTimer); renderVisible(); }
+  else scheduleRender();
 }
 
 /* Es wird immer nur der sichtbare Ausschnitt gezeichnet.
@@ -1163,6 +1277,15 @@ function bakePlan(){
 
 $('#bake').onclick = bakePlan;
 
+$('#neuladen').onclick = function(){ location.reload(); };
+
+$('#nurplan').onclick = function(){
+  var an = document.body.classList.toggle('nurplan');
+  this.textContent = an ? 'Suche zeigen' : 'Nur Plan';
+  try{ localStorage.setItem('planfinder-nurplan', an ? '1' : '0'); }catch(e){}
+  layout();
+};
+
 $('#klapp').onclick = function(){
   var zu = document.body.classList.toggle('listeZu');
   this.textContent = zu ? 'Liste ▼' : 'Liste ▲';
@@ -1297,6 +1420,9 @@ function appSymbol(){
   if('serviceWorker' in navigator &&
      (location.protocol === 'https:' || location.hostname === 'localhost')){
     navigator.serviceWorker.register('sw.js').catch(function(){});
+    navigator.serviceWorker.addEventListener('message', function(e){
+      if(e.data && e.data.typ === 'neueFassung') $('#neu').hidden = false;
+    });
   }
 })();
 
@@ -1310,6 +1436,10 @@ try{
   if(g !== null) $('#groesse').value = g;
   var gen = localStorage.getItem('planfinder-genauigkeit');
   if(gen) $('#genauigkeit').value = gen;
+  if(localStorage.getItem('planfinder-nurplan') === '1'){
+    document.body.classList.add('nurplan');
+    $('#nurplan').textContent = 'Suche zeigen';
+  }
 }catch(e){}
 setGenauigkeit($('#genauigkeit').value, false);
 setFarbe($('#farbe').value);
@@ -1324,6 +1454,22 @@ function b64ToBytes(b64){
   var bin = atob(b64), n = bin.length, out = new Uint8Array(n);
   for(var i=0;i<n;i++) out[i] = bin.charCodeAt(i);
   return out;
+}
+
+/* Liegt die feste Plan-PDF neben dieser Datei? Dann die nehmen. */
+function ladeFestenPlan(){
+  if(!PLAN_DATEI || location.protocol === 'file:') return Promise.resolve(false);
+  setStatus('Plan wird geladen …', 0);
+  return fetch(PLAN_DATEI).then(function(r){
+    if(!r.ok) throw new Error('nicht da (' + r.status + ')');
+    return r.arrayBuffer();
+  }).then(function(buf){
+    if(oeffnetGerade) return true;
+    $('#docname').textContent = PLAN_DATEI;
+    return openData(buf, 'datei').then(function(){ return true; });
+  }).catch(function(){
+    return false;
+  });
 }
 
 (function(){
@@ -1343,12 +1489,18 @@ function b64ToBytes(b64){
     }, 40);
     return;
   }
-  /* Sonst: liegt vom letzten Mal noch ein gemerkter Plan im Browser? */
-  planHolen().then(function(eintrag){
-    if(!eintrag || !eintrag.daten || oeffnetGerade) return;
-    $('#docname').textContent = eintrag.name || 'gemerkter Plan';
-    setStatus('Zuletzt benutzter Plan wird geladen …', 0);
-    openData(eintrag.daten, 'gemerkt');
+  /* Sonst: erst die feste Plan-Datei, dann der zuletzt gemerkte Plan. */
+  ladeFestenPlan().then(function(geklappt){
+    if(geklappt || oeffnetGerade) return;
+    return planHolen().then(function(eintrag){
+      if(!eintrag || !eintrag.daten || oeffnetGerade){
+        setStatus('Bitte eine PDF öffnen.');
+        return;
+      }
+      $('#docname').textContent = eintrag.name || 'gemerkter Plan';
+      setStatus('Zuletzt benutzter Plan wird geladen …', 0);
+      openData(eintrag.daten, 'gemerkt');
+    });
   });
 })();
 
@@ -1359,6 +1511,8 @@ window.Suchhilfe = {
   goTo: goToHit,
   showPage: showPage,
   hits: function(){ return hits; },
+  zeiten: function(){ return ZEIT; },
+  seite: function(n){ return showPage(n); },
   state: function(){
     var vp = pageObj ? pageObj.getViewport({ scale: scale }) : null;
     return {
