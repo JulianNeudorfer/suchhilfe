@@ -169,7 +169,23 @@
     display:flex; align-items:center; gap:12px; padding:8px 14px; font-size:13px;
     background:#3a2a12; border-bottom:1px solid var(--acc); color:var(--tx);
   }
+  /* Ohne diese Zeile würde display:flex das hidden-Attribut aushebeln und
+     der Balken stünde dauerhaft da. */
+  #neu[hidden], #info[hidden]{display:none !important}
   #neu .btn{padding:5px 10px; font-size:12.5px; margin-left:auto}
+
+  #info{
+    position:fixed; inset:0; z-index:200; background:rgba(10,12,17,.94);
+    display:flex; align-items:center; justify-content:center; padding:20px;
+  }
+  #info .kasten{max-width:520px; width:100%}
+  #info h1{font-size:17px; margin:0 0 12px; color:var(--acc)}
+  #info pre{
+    background:var(--bg); border:1px solid var(--line); border-radius:8px;
+    padding:12px; font-size:12px; line-height:1.55; white-space:pre-wrap;
+    word-break:break-word; max-height:46vh; overflow:auto; margin:0 0 12px;
+  }
+  #info .reihe{display:flex; gap:8px; flex-wrap:wrap}
   #stage{flex:1; min-height:0; overflow:auto; position:relative; background:#0c0e13; touch-action:none}
   /* Die weißen Blätter zeichnet die Anzeige selbst - hier keine Fläche,
      sonst wären die Lücken zwischen den Seiten ebenfalls weiß. */
@@ -316,6 +332,7 @@
       <span class="farblbl">Größe</span>
       <input type="range" id="groesse" min="0" max="100" value="15" title="Größe der Markierung">
       <button class="btn klein" id="nurplan" title="Kopfzeile und Suchfeld ausblenden - der Plan bekommt den ganzen Platz">Nur Plan</button>
+      <button class="btn klein" id="infoauf" title="Zeigt, was gerade geladen ist - hilfreich bei Problemen">?</button>
     </div>
 
     <div id="neu" hidden>
@@ -338,6 +355,18 @@
 </main>
 
 <div id="drop"><div>PDF hier loslassen</div></div>
+
+<div id="info" hidden>
+  <div class="kasten">
+    <h1>Was gerade los ist</h1>
+    <pre id="infotext"></pre>
+    <div class="reihe">
+      <button class="btn" id="infokopieren">Text kopieren</button>
+      <button class="btn" id="infoleeren">Speicher leeren &amp; neu laden</button>
+      <button class="btn main" id="infozu">Schließen</button>
+    </div>
+  </div>
+</div>
 
 <!-- Hier landet die fest eingebaute PDF (Knopf „Plan fest einbauen“). Leer = keine dabei. -->
 <script id="planData" type="text/plain"></script>
@@ -372,7 +401,9 @@ var hits = [];              // alle Treffer: {page,start,end,term,snip}
 var hitIdx = -1;            // aktueller Treffer
 var pageNo = 1, scale = 1.5;
 var pageHits = [];          // Treffer, die gezeichnet werden
-var seiten = [];            // [{w,h,y}] Maße bei 100 %, y = Abstand von oben
+var seiten = [];            // [{w,h}] Maße jeder Seite bei 100 %
+var reihe = [];             // angezeigte Blätter: [{n,y,hoehe,breite}]
+var nurTreffer = false;     // bei laufender Suche nur Seiten mit Treffern
 var blattBreite = 0, blattHoehe = 0;
 var LUECKE = 10;            // Abstand zwischen zwei Blättern
 var seitenSpeicher = {};    // Seitenzahl -> pdf.js-Seite
@@ -553,7 +584,8 @@ function openData(buf, quelle){
   oeffnetGerade = true;
   geomSpeicher = {}; geomReihe = [];
   hits = []; hitIdx = -1; pagesRaw = []; pageHits = [];
-  seiten = []; seitenSpeicher = {}; aufgabenAbbrechen();
+  seiten = []; reihe = []; nurTreffer = false;
+  seitenSpeicher = {}; aufgabenAbbrechen();
   docHasText = false; emptyNote = '';
   renderResults();
   setStatus('PDF wird geöffnet …', 0);
@@ -765,7 +797,7 @@ function search(){
     setStatus(pdfDoc.numPages + ' Seiten geladen.');
     $('#copy').disabled = true;
     updateHitLabel();
-    drawOverlay();
+    alleSeitenZeigen();          // ohne Suche wieder der ganze Plan
     return;
   }
 
@@ -813,12 +845,16 @@ function search(){
 
   syncPageHits();
   renderResults();
-  var seiten = {};
-  hits.forEach(function(h){ seiten[h.page] = 1; });
-  var nP = Object.keys(seiten).length;
+  var mitTreffer = {};
+  hits.forEach(function(h){ mitTreffer[h.page] = 1; });
+  var nP = Object.keys(mitTreffer).length;
   if(hits.length){
     setStatus(hits.length + ' Treffer auf ' + nP + ' Seite' + (nP===1?'':'n') + '.');
     $('#copy').disabled = false;
+    /* Ab jetzt nur noch die Seiten mit Treffern zeigen - dazwischen gibt es
+       nichts zu scrollen. Suchfeld leeren bringt den ganzen Plan zurück. */
+    nurTreffer = true;
+    layout(true);
     goToHit(0);
   } else if(!docHasText){
     setStatus('Diese PDF enthält keinen Text - die Suche kann hier nichts finden.');
@@ -829,7 +865,7 @@ function search(){
     renderResults();
     $('#copy').disabled = true;
     updateHitLabel();
-    drawOverlay();
+    alleSeitenZeigen();
   } else {
     setStatus('Keine Treffer für „' + terms.join('“, „') + '“.');
     emptyNote = 'Keine Treffer für <b>' + terms.join('</b>, <b>') + '</b>.<br><br>' +
@@ -838,7 +874,7 @@ function search(){
     renderResults();
     $('#copy').disabled = true;
     updateHitLabel();
-    drawOverlay();
+    alleSeitenZeigen();
   }
 }
 
@@ -924,36 +960,75 @@ function seiteHolen(n){
    Maße nachgetragen. */
 function masseSetzen(w, h){
   seiten = [];
-  for(var i = 0; i < pdfDoc.numPages; i++) seiten.push({ w:w, h:h, y:0 });
+  for(var i = 0; i < pdfDoc.numPages; i++) seiten.push({ w:w, h:h });
   berechneBlatt();
 }
 
+/* Baut die Reihenfolge der angezeigten Blätter auf. Läuft eine Suche, sind
+   das nur die Seiten mit Treffern - dazwischen gibt es dann nichts zu
+   scrollen. Ohne Suche stehen alle Seiten untereinander. */
 function berechneBlatt(){
-  var y = 0, breit = 0;
-  for(var i = 0; i < seiten.length; i++){
-    seiten[i].y = y;
-    y += Math.round(seiten[i].h * scale) + LUECKE;
-    breit = Math.max(breit, Math.round(seiten[i].w * scale));
+  var nummern = [];
+  if(nurTreffer && hits.length){
+    var gesehen = {};
+    hits.forEach(function(h){
+      if(!gesehen[h.page]){ gesehen[h.page] = 1; nummern.push(h.page); }
+    });
+    nummern.sort(function(a,b){ return a-b; });
+  } else {
+    for(var i = 1; i <= seiten.length; i++) nummern.push(i);
   }
+
+  reihe = [];
+  var y = 0, breit = 0;
+  nummern.forEach(function(n){
+    var s = seiten[n-1];
+    if(!s) return;
+    var hoehe = Math.round(s.h * scale), breite = Math.round(s.w * scale);
+    reihe.push({ n:n, y:y, hoehe:hoehe, breite:breite });
+    y += hoehe + LUECKE;
+    breit = Math.max(breit, breite);
+  });
+
   blattHoehe  = Math.max(1, y - LUECKE);
   blattBreite = Math.max(1, breit);
   sheet.style.width  = blattBreite + 'px';
   sheet.style.height = blattHoehe + 'px';
+
+  $('#pgtotal').textContent = (nurTreffer && reihe.length < seiten.length)
+    ? '/ ' + reihe.length + ' mit Treffer'
+    : '/ ' + seiten.length;
 }
 
-function seiteHoehe(i){ return Math.round(seiten[i].h * scale); }
-function seiteX(i){ return Math.round((blattBreite - seiten[i].w * scale) / 2); }
-
-function seiteBeiY(y){
-  for(var i = seiten.length - 1; i >= 0; i--) if(y >= seiten[i].y) return i + 1;
-  return 1;
+/* Zurück zum ganzen Plan (Suchfeld leer oder ohne Treffer) */
+function alleSeitenZeigen(){
+  if(nurTreffer){
+    nurTreffer = false;
+    var vorher = pageNo;
+    layout(true);
+    showPage(vorher);
+  } else {
+    drawOverlay();
+  }
 }
 
-function sichtbareSeiten(oy, vh){
+function eintragX(e){ return Math.round((blattBreite - e.breite) / 2); }
+
+function eintragFuer(n){
+  for(var i = 0; i < reihe.length; i++) if(reihe[i].n === n) return reihe[i];
+  return null;
+}
+
+function eintragBeiY(y){
+  for(var i = reihe.length - 1; i >= 0; i--) if(y >= reihe[i].y) return reihe[i];
+  return reihe[0] || null;
+}
+
+function sichtbareEintraege(oy, vh){
   var raus = [];
-  for(var i = 0; i < seiten.length; i++){
-    if(seiten[i].y > oy + vh) break;
-    if(seiten[i].y + seiteHoehe(i) > oy) raus.push(i + 1);
+  for(var i = 0; i < reihe.length; i++){
+    if(reihe[i].y > oy + vh) break;
+    if(reihe[i].y + reihe[i].hoehe > oy) raus.push(reihe[i]);
   }
   return raus;
 }
@@ -972,17 +1047,32 @@ function scrollStand(){
    liegen alle Seiten übereinander gestapelt, gezeichnet wird direkt aus hits. */
 function syncPageHits(){ pageHits = hits; }
 
-/* Zu einer bestimmten Seite scrollen */
+/* Zu einer bestimmten Seite scrollen. Ist sie gerade ausgeblendet (weil nur
+   Treffer-Seiten gezeigt werden), wird die nächstgelegene angezeigte genommen. */
 function showPage(n){
-  if(!pdfDoc || !seiten.length) return Promise.resolve();
+  if(!pdfDoc || !reihe.length) return Promise.resolve();
   n = Math.max(1, Math.min(seiten.length, n|0));
-  pageNo = n;
-  $('#pgin').value = n;
-  stage.scrollTop  = sheet.offsetTop  + seiten[n-1].y;
-  stage.scrollLeft = sheet.offsetLeft + seiteX(n-1);
+  var e = eintragFuer(n);
+  if(!e){
+    e = reihe[0];
+    for(var i = 0; i < reihe.length; i++) if(reihe[i].n <= n) e = reihe[i];
+  }
+  pageNo = e.n;
+  $('#pgin').value = e.n;
+  stage.scrollTop  = sheet.offsetTop  + e.y;
+  stage.scrollLeft = sheet.offsetLeft + eintragX(e);
   clearTimeout(renderTimer);
   renderVisible();
   return Promise.resolve();
+}
+
+/* Ein Blatt weiter oder zurück - innerhalb der gerade gezeigten Reihe */
+function blaettern(richtung){
+  if(!reihe.length) return;
+  var pos = 0;
+  for(var i = 0; i < reihe.length; i++) if(reihe[i].n === pageNo) pos = i;
+  var ziel = reihe[Math.max(0, Math.min(reihe.length-1, pos + richtung))];
+  if(ziel) showPage(ziel.n);
 }
 
 /* Textteile der zuletzt angesehenen Seiten aufheben - Springen zwischen
@@ -1027,7 +1117,17 @@ function aufgabenAbbrechen(){
 }
 
 function renderVisible(){
-  if(!pdfDoc || !seiten.length) return;
+  if(!pdfDoc || !reihe.length) return;
+
+  /* Beim Start steht die Größe des Fensters manchmal noch nicht fest -
+     am iPhone kommt das regelmäßig vor. Dann gleich noch einmal versuchen,
+     sonst bliebe die Fläche leer. */
+  if(stage.clientWidth < 2 || stage.clientHeight < 2){
+    clearTimeout(renderTimer);
+    renderTimer = setTimeout(renderVisible, 120);
+    return;
+  }
+
   var st = scrollStand(), ox = st.ox, oy = st.oy;
 
   [base, over].forEach(function(c){
@@ -1043,22 +1143,21 @@ function renderVisible(){
   ctx.setTransform(1,0,0,1,0,0);
   ctx.clearRect(0, 0, base.width, base.height);
 
-  var liste = sichtbareSeiten(oy, st.vh);
+  var liste = sichtbareEintraege(oy, st.vh);
 
   /* Leere Blattflächen sofort füllen, damit man beim Scrollen nicht ins
      Dunkle schaut, während die Seiten noch gerechnet werden. */
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   ctx.translate(-ox, -oy);
   ctx.fillStyle = '#fff';
-  liste.forEach(function(n){
-    var i = n - 1;
-    ctx.fillRect(seiteX(i), seiten[i].y, Math.round(seiten[i].w * scale), seiteHoehe(i));
+  liste.forEach(function(e){
+    ctx.fillRect(eintragX(e), e.y, e.breite, e.hoehe);
   });
 
   /* Seitenanzeige mitführen: was in der Mitte des Fensters steht, gilt. */
-  var mitte = seiteBeiY(oy + st.vh / 2);
-  if(mitte !== pageNo){
-    pageNo = mitte;
+  var mitte = eintragBeiY(oy + st.vh / 2);
+  if(mitte && mitte.n !== pageNo){
+    pageNo = mitte.n;
     if(document.activeElement !== $('#pgin')) $('#pgin').value = pageNo;
   }
 
@@ -1076,7 +1175,7 @@ function zeichneNacheinander(liste, ox, oy, lauf){
   var k = 0;
   function weiter(){
     if(lauf !== zeichenLauf || k >= liste.length) return Promise.resolve();
-    var n = liste[k++], i = n - 1;
+    var e = liste[k++], n = e.n;
     return seiteHolen(n).then(function(page){
       if(lauf !== zeichenLauf) return;
       var ctx = base.getContext('2d');
@@ -1084,7 +1183,7 @@ function zeichneNacheinander(liste, ox, oy, lauf){
       var t = page.render({
         canvasContext: ctx,
         viewport: page.getViewport({ scale: scale }),
-        transform: [dpr, 0, 0, dpr, (seiteX(i) - ox) * dpr, (seiten[i].y - oy) * dpr],
+        transform: [dpr, 0, 0, dpr, (eintragX(e) - ox) * dpr, (e.y - oy) * dpr],
         /* Ohne diese Angabe malt pdf.js zuerst die komplette Fläche weiß aus
            und löscht damit die Nachbarseiten und die Lücken dazwischen. */
         background: 'rgba(0,0,0,0)'
@@ -1179,14 +1278,14 @@ function drawOverlay(ox, oy){
   var active = hits[hitIdx];
   var vh = parseFloat(over.style.height) || stage.clientHeight;
 
-  sichtbareSeiten(oy, vh).forEach(function(n){
+  sichtbareEintraege(oy, vh).forEach(function(e){
+  var n = e.n;
   var g = geomSpeicher[n], page = seitenSpeicher[n];
   if(!g || !page) return;
-  var i = n - 1;
   var vp = page.getViewport({ scale: scale });
   /* Ursprung auf die linke obere Ecke genau dieser Seite legen */
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-  ctx.translate(seiteX(i) - ox, seiten[i].y - oy);
+  ctx.translate(eintragX(e) - ox, e.y - oy);
 
   hits.filter(function(h){ return h.page === n; }).forEach(function(h){
     var on = !!active && h.page === active.page && h.start === active.start;
@@ -1238,16 +1337,18 @@ function goToHit(i){
   hitIdx = (i + hits.length) % hits.length;
   var h = hits[hitIdx];
   markActive();
-  var i = h.page - 1;
-  if(!seiten[i]) return;
+  var e = eintragFuer(h.page);
+  if(!e) return;
+  pageNo = h.page;
+  $('#pgin').value = h.page;
   return seiteHolen(h.page).then(function(page){
     return geomFuer(page, h.page).then(function(g){
       var c = centerOf(h, page.getViewport({ scale: scale }), g);
       if(c){
-        stage.scrollLeft = sheet.offsetLeft + seiteX(i) + c.x - stage.clientWidth/2;
-        stage.scrollTop  = sheet.offsetTop  + seiten[i].y + c.y - stage.clientHeight/2;
+        stage.scrollLeft = sheet.offsetLeft + eintragX(e) + c.x - stage.clientWidth/2;
+        stage.scrollTop  = sheet.offsetTop  + e.y + c.y - stage.clientHeight/2;
       } else {
-        stage.scrollTop = sheet.offsetTop + seiten[i].y;
+        stage.scrollTop = sheet.offsetTop + e.y;
       }
       clearTimeout(renderTimer);
       renderVisible();
@@ -1285,8 +1386,8 @@ $('#q').addEventListener('input', function(){
 $('#loose').onchange = function(){ if(pdfDoc) search(); };
 $('#genauigkeit').onchange = function(){ setGenauigkeit(this.value, true); };
 
-$('#prevpg').onclick = function(){ showPage(pageNo-1); };
-$('#nextpg').onclick = function(){ showPage(pageNo+1); };
+$('#prevpg').onclick = function(){ blaettern(-1); };
+$('#nextpg').onclick = function(){ blaettern(1); };
 $('#pgin').onchange  = function(){ showPage(parseInt($('#pgin').value,10) || 1); };
 $('#prevhit').onclick = function(){ goToHit(hitIdx-1); };
 $('#nexthit').onclick = function(){ goToHit(hitIdx+1); };
@@ -1585,6 +1686,76 @@ function appSymbol(){
   }
 })();
 
+/* ---------------- Was gerade los ist ----------------
+   Sammelt die Angaben, die bei Problemen weiterhelfen, und kann den
+   gesamten Zwischenspeicher löschen - das behebt fast alle Fälle, in denen
+   das Handy an einer alten Fassung festhängt. */
+var FASSUNG = '7. September 2026';
+var DIAG = { plan: 'noch nichts geladen', sw: 'wird geprüft …' };
+
+function infoText(){
+  var zeilen = [
+    'Fassung: ' + FASSUNG,
+    'Adresse: ' + location.href,
+    'Plan-Datei: ' + PLAN_DATEI + ' - ' + DIAG.plan,
+    'Seiten: ' + (pdfDoc ? pdfDoc.numPages : '-') +
+      ', angezeigt: ' + reihe.length + (nurTreffer ? ' (nur Treffer)' : ''),
+    'Textebene: ' + (docHasText ? 'vorhanden' : 'keine') +
+      (ZEIT.suchbereit ? ', suchbereit nach ' + Math.round(ZEIT.suchbereit) + ' ms' : ''),
+    'Anzeigefläche: ' + stage.clientWidth + ' x ' + stage.clientHeight + ' Punkte',
+    'Zeichenfläche: ' + base.width + ' x ' + base.height + ' Punkte',
+    'Vergrößerung: ' + Math.round(scale*100) + ' %',
+    'Rechenteil: ' + (window.pdfjsWorker ? 'im Hauptfenster' : 'eigener Worker'),
+    'Offline-Speicher: ' + DIAG.sw,
+    'Gerät: ' + navigator.userAgent
+  ];
+  return zeilen.join('\n');
+}
+
+function speicherLeeren(){
+  var schritte = [];
+  try{
+    if(navigator.serviceWorker){
+      schritte.push(navigator.serviceWorker.getRegistrations().then(function(rs){
+        return Promise.all(rs.map(function(r){ return r.unregister(); }));
+      }));
+    }
+  }catch(e){}
+  try{
+    if(window.caches){
+      schritte.push(caches.keys().then(function(ns){
+        return Promise.all(ns.map(function(n){ return caches.delete(n); }));
+      }));
+    }
+  }catch(e){}
+  try{ indexedDB.deleteDatabase('planfinder'); }catch(e){}
+  Promise.all(schritte).catch(function(){}).then(function(){
+    setTimeout(function(){ location.reload(); }, 300);
+  });
+}
+
+$('#infoauf').onclick = function(){
+  $('#infotext').textContent = infoText();
+  $('#info').hidden = false;
+};
+$('#infozu').onclick = function(){ $('#info').hidden = true; };
+$('#infokopieren').onclick = function(){
+  var b = this;
+  navigator.clipboard.writeText(infoText()).then(function(){
+    b.textContent = 'kopiert ✓';
+    setTimeout(function(){ b.textContent = 'Text kopieren'; }, 1500);
+  });
+};
+$('#infoleeren').onclick = speicherLeeren;
+
+try{
+  if(navigator.serviceWorker){
+    navigator.serviceWorker.getRegistrations().then(function(rs){
+      DIAG.sw = rs.length ? 'aktiv' : 'nicht eingerichtet';
+    });
+  } else { DIAG.sw = 'vom Browser nicht angeboten'; }
+}catch(e){ DIAG.sw = 'nicht verfügbar'; }
+
 /* ---------------- Start ---------------- */
 $('#farbe').onchange = function(){ setFarbe(this.value); };
 $('#groesse').oninput = function(){ setGroesse(this.value); };
@@ -1639,10 +1810,12 @@ function ladeFestenPlan(){
       meldung = '„' + PLAN_DATEI + '“ ist keine PDF-Datei (oder wurde nicht vollständig hochgeladen).';
       throw new Error('keinePdf');
     }
+    DIAG.plan = 'geladen, ' + Math.round(buf.byteLength/1024) + ' KB';
     if(oeffnetGerade) return true;
     $('#docname').textContent = PLAN_DATEI;
     return openData(buf, 'datei').then(function(){ return true; });
   }).catch(function(e){
+    DIAG.plan = meldung || ('Fehler: ' + (e && e.message ? e.message : 'unbekannt'));
     if(meldung) setStatus(meldung);
     console.warn('Fester Plan nicht geladen:', e);
     return false;
