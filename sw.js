@@ -44,15 +44,18 @@ self.addEventListener('fetch', function(e){
     caches.match(e.request).then(function(gespeichert){
       var ausDemNetz = fetch(e.request).then(function(antwort){
         if(antwort && antwort.ok){
-          if(gespeichert && istSeite(e.request) && hatSichGeaendert(gespeichert, antwort)){
-            melden({ typ: 'neueFassung' });
-          }
+          if(gespeichert && istSeite(e.request)) pruefeAenderung(gespeichert, antwort);
           var kopie = antwort.clone();
           caches.open(LAGER).then(function(c){ c.put(e.request, kopie); }).catch(function(){});
         }
         return antwort;
       }).catch(function(){
-        return gespeichert || caches.match('./index.html');
+        if(gespeichert) return gespeichert;
+        /* Nur beim Seitenaufruf darf die App als Ersatz kommen. Für alles
+           andere - vor allem für plan.pdf - wäre das fatal: die App würde
+           HTML als PDF zu öffnen versuchen. */
+        if(istSeite(e.request)) return caches.match('./index.html');
+        return new Response('', { status: 504, statusText: 'nicht erreichbar' });
       });
       return gespeichert || ausDemNetz;
     })
@@ -64,15 +67,16 @@ function istSeite(anfrage){
          /(\/|\.html)$/.test(new URL(anfrage.url).pathname);
 }
 
-function kennzeichen(antwort){
-  return antwort.headers.get('ETag') ||
-         antwort.headers.get('Last-Modified') ||
-         antwort.headers.get('Content-Length') || '';
-}
-
-function hatSichGeaendert(alt, neu){
-  var a = kennzeichen(alt), b = kennzeichen(neu);
-  return !!a && !!b && a !== b;
+/* Wirklich den Inhalt vergleichen, nicht die Kopfzeilen des Servers:
+   ETag, Länge und Datum ändern sich je nach Server auch dann, wenn die
+   Datei dieselbe ist - dann käme die Meldung bei jedem Öffnen. */
+function pruefeAenderung(alt, neu){
+  try{
+    Promise.all([alt.clone().arrayBuffer(), neu.clone().arrayBuffer()])
+      .then(function(beide){
+        if(beide[0].byteLength !== beide[1].byteLength) melden({ typ: 'neueFassung' });
+      }).catch(function(){});
+  }catch(e){}
 }
 
 /* Der Seite Bescheid geben, dass eine neue Fassung bereitliegt - sonst

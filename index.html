@@ -171,7 +171,9 @@
   }
   #neu .btn{padding:5px 10px; font-size:12.5px; margin-left:auto}
   #stage{flex:1; min-height:0; overflow:auto; position:relative; background:#0c0e13; touch-action:none}
-  #sheet{position:relative; margin:20px auto; background:#fff; box-shadow:0 8px 40px rgba(0,0,0,.6)}
+  /* Die weißen Blätter zeichnet die Anzeige selbst - hier keine Fläche,
+     sonst wären die Lücken zwischen den Seiten ebenfalls weiß. */
+  #sheet{position:relative; margin:20px auto}
   #sheet canvas{position:absolute; top:0; left:0}
   #over{pointer-events:none}
   .placeholder{
@@ -369,10 +371,15 @@ var emptyNote = '';         // Hinweis, wenn die Trefferliste leer ist
 var hits = [];              // alle Treffer: {page,start,end,term,snip}
 var hitIdx = -1;            // aktueller Treffer
 var pageNo = 1, scale = 1.5;
-var pageObj = null;         // aktuell geladene pdf.js-Seite
-var pageGeom = null;        // {items, offs} der aktuellen Seite
-var pageHits = [];          // Treffer der aktuellen Seite
-var renderTask = null, renderTimer = null, searchTimer = null;
+var pageHits = [];          // Treffer, die gezeichnet werden
+var seiten = [];            // [{w,h,y}] Maße bei 100 %, y = Abstand von oben
+var blattBreite = 0, blattHoehe = 0;
+var LUECKE = 10;            // Abstand zwischen zwei Blättern
+var seitenSpeicher = {};    // Seitenzahl -> pdf.js-Seite
+var laufendeAufgaben = [];  // gerade laufende Zeichenaufträge
+var zeichenLauf = 0;        // zählt die Zeichendurchläufe mit
+var zeichenKette = Promise.resolve();   // Aufträge laufen streng nacheinander
+var renderTimer = null, searchTimer = null;
 var dpr = Math.min(window.devicePixelRatio || 1, 2);
 var ZEIT = { start: (window.performance ? performance.now() : 0) };  // Messpunkte
 var planBytes = null;       // Kopie der PDF-Daten (zum Einbauen)
@@ -545,7 +552,8 @@ function openData(buf, quelle){
   }
   oeffnetGerade = true;
   geomSpeicher = {}; geomReihe = [];
-  hits = []; hitIdx = -1; pagesRaw = []; pageObj = null; pageGeom = null; pageHits = [];
+  hits = []; hitIdx = -1; pagesRaw = []; pageHits = [];
+  seiten = []; seitenSpeicher = {}; aufgabenAbbrechen();
   docHasText = false; emptyNote = '';
   renderResults();
   setStatus('PDF wird geöffnet …', 0);
@@ -569,7 +577,11 @@ function openData(buf, quelle){
     sheet.style.display = 'block';
     /* Erst den Plan zeigen, dann den Text einlesen - so ist sofort etwas
        da, statt auf alle Seiten zu warten. */
-    return showPage(1);
+    return seiteHolen(1).then(function(p){
+      var v = p.getViewport({ scale: 1 });
+      masseSetzen(v.width, v.height);
+      return showPage(1);
+    });
   }).then(function(){
     ZEIT.planSichtbar = performance.now();
     return textHolen();
@@ -585,8 +597,12 @@ function openData(buf, quelle){
   }).catch(function(e){
     if(e && e.name === 'PasswordException'){
       setStatus('Diese PDF ist passwortgeschützt.');
+    } else if(e && e.name === 'InvalidPDFException'){
+      setStatus('Die Datei ist keine gültige PDF - vermutlich unvollständig hochgeladen.');
+    } else if(e && e.name === 'MissingPDFException'){
+      setStatus('Die PDF wurde nicht gefunden.');
     } else {
-      setStatus('PDF konnte nicht geöffnet werden.');
+      setStatus('PDF konnte nicht geöffnet werden' + (e && e.message ? ': ' + e.message : '.'));
     }
     console.error(e);
   });
@@ -616,6 +632,15 @@ function textHolen(){
           if(e && e.seiten && e.seiten.length === pdfDoc.numPages){
             pagesRaw = e.seiten;
             docHasText = e.zeichen > 0;
+            /* Blattmaße kommen mit aus dem Speicher, sonst stünden alle
+               Seiten mit der Größe von Seite 1 untereinander. */
+            if(e.masse && e.masse.length === seiten.length){
+              for(var k = 0; k < seiten.length; k++){
+                seiten[k].w = e.masse[k].w;
+                seiten[k].h = e.masse[k].h;
+              }
+              layout(true);
+            }
             setStatus(docHasText
               ? pagesRaw.length + ' Seiten · ' + e.zeichen.toLocaleString('de-AT') + ' Zeichen Text.'
               : 'Achtung: keine Textebene gefunden - die Suche findet hier nichts.');
@@ -638,7 +663,11 @@ function textMerken(){
   try{
     dbOeffnen().then(function(db){
       db.transaction('plan', 'readwrite').objectStore('plan')
-        .put({ seiten: pagesRaw, zeichen: zeichen }, k);
+        .put({
+          seiten: pagesRaw,
+          zeichen: zeichen,
+          masse: seiten.map(function(s){ return { w:s.w, h:s.h }; })
+        }, k);
     }).catch(function(){});
   }catch(e){}
 }
@@ -648,6 +677,8 @@ function scanAll(){
   var total = pdfDoc.numPages, chars = 0, p = 1;
   pagesRaw = new Array(total);
 
+  var masseGeaendert = false;
+
   function step(){
     if(p > total){
       docHasText = chars > 0;
@@ -656,10 +687,21 @@ function scanAll(){
       } else {
         setStatus(total + ' Seiten eingelesen · ' + chars.toLocaleString('de-AT') + ' Zeichen Text.');
       }
+      if(masseGeaendert) layout(true);   // Blätter sind unterschiedlich groß
       return Promise.resolve();
     }
     var cur = p++;
     return pdfDoc.getPage(cur).then(function(page){
+      /* Beim Durchgehen gleich die echten Blattmaße mitnehmen - bis hierher
+         galt für alle Seiten die Größe von Seite 1. */
+      if(seiten[cur-1]){
+        var v = page.getViewport({ scale: 1 });
+        if(Math.abs(seiten[cur-1].w - v.width) > 1 || Math.abs(seiten[cur-1].h - v.height) > 1){
+          seiten[cur-1].w = v.width;
+          seiten[cur-1].h = v.height;
+          masseGeaendert = true;
+        }
+      }
       return page.getTextContent().then(function(tc){
         var raw = tc.items.map(function(it){ return it.str; }).join(' ');
         pagesRaw[cur-1] = raw;
@@ -867,29 +909,80 @@ function updateHitLabel(){
     : 'kein Treffer';
 }
 
-/* ---------------- Seite anzeigen ---------------- */
-/* Welche Treffer liegen auf der gerade gezeigten Seite? */
-function syncPageHits(){
-  pageHits = hits.filter(function(h){ return h.page === pageNo; });
+/* ---------------- Alle Seiten untereinander ----------------
+   Der Plan ist ein durchgehendes Blatt: alle Seiten untereinander, dazwischen
+   eine schmale Lücke. Gezeichnet wird immer nur der sichtbare Ausschnitt -
+   dadurch bleibt auch 900 % Zoom flüssig, egal wie viele Seiten es sind. */
+
+function seiteHolen(n){
+  if(seitenSpeicher[n]) return Promise.resolve(seitenSpeicher[n]);
+  return pdfDoc.getPage(n).then(function(p){ seitenSpeicher[n] = p; return p; });
 }
 
+/* Fast immer sind alle Blätter gleich groß, deshalb wird Seite 1 gemessen
+   und für den Rest angenommen. Beim Einlesen des Textes werden abweichende
+   Maße nachgetragen. */
+function masseSetzen(w, h){
+  seiten = [];
+  for(var i = 0; i < pdfDoc.numPages; i++) seiten.push({ w:w, h:h, y:0 });
+  berechneBlatt();
+}
+
+function berechneBlatt(){
+  var y = 0, breit = 0;
+  for(var i = 0; i < seiten.length; i++){
+    seiten[i].y = y;
+    y += Math.round(seiten[i].h * scale) + LUECKE;
+    breit = Math.max(breit, Math.round(seiten[i].w * scale));
+  }
+  blattHoehe  = Math.max(1, y - LUECKE);
+  blattBreite = Math.max(1, breit);
+  sheet.style.width  = blattBreite + 'px';
+  sheet.style.height = blattHoehe + 'px';
+}
+
+function seiteHoehe(i){ return Math.round(seiten[i].h * scale); }
+function seiteX(i){ return Math.round((blattBreite - seiten[i].w * scale) / 2); }
+
+function seiteBeiY(y){
+  for(var i = seiten.length - 1; i >= 0; i--) if(y >= seiten[i].y) return i + 1;
+  return 1;
+}
+
+function sichtbareSeiten(oy, vh){
+  var raus = [];
+  for(var i = 0; i < seiten.length; i++){
+    if(seiten[i].y > oy + vh) break;
+    if(seiten[i].y + seiteHoehe(i) > oy) raus.push(i + 1);
+  }
+  return raus;
+}
+
+function scrollStand(){
+  var vw = Math.min(stage.clientWidth, blattBreite);
+  var vh = Math.min(stage.clientHeight, blattHoehe);
+  return {
+    vw: vw, vh: vh,
+    ox: Math.max(0, Math.min(stage.scrollLeft - sheet.offsetLeft, blattBreite - vw)),
+    oy: Math.max(0, Math.min(stage.scrollTop  - sheet.offsetTop,  blattHoehe  - vh))
+  };
+}
+
+/* Früher wurden die Treffer der einen gezeigten Seite vorgemerkt. Jetzt
+   liegen alle Seiten übereinander gestapelt, gezeichnet wird direkt aus hits. */
+function syncPageHits(){ pageHits = hits; }
+
+/* Zu einer bestimmten Seite scrollen */
 function showPage(n){
-  if(!pdfDoc) return Promise.resolve();
-  n = Math.max(1, Math.min(pdfDoc.numPages, n|0));
+  if(!pdfDoc || !seiten.length) return Promise.resolve();
+  n = Math.max(1, Math.min(seiten.length, n|0));
   pageNo = n;
   $('#pgin').value = n;
-  return pdfDoc.getPage(n).then(function(page){
-    pageObj = page;
-    pageGeom = null;
-    syncPageHits();
-    layout(true);                 // Plan sofort zeichnen, ohne auf den Text zu warten
-    return geomFuer(page, n);
-  }).then(function(g){
-    if(pageNo !== n) return;      // inzwischen weitergeblättert
-    pageGeom = g;
-    syncPageHits();
-    drawOverlay();                // Markierungen nachziehen
-  });
+  stage.scrollTop  = sheet.offsetTop  + seiten[n-1].y;
+  stage.scrollLeft = sheet.offsetLeft + seiteX(n-1);
+  clearTimeout(renderTimer);
+  renderVisible();
+  return Promise.resolve();
 }
 
 /* Textteile der zuletzt angesehenen Seiten aufheben - Springen zwischen
@@ -912,10 +1005,8 @@ function geomFuer(page, n){
 }
 
 function layout(sofort){
-  if(!pageObj) return;
-  var vp = pageObj.getViewport({ scale: scale });
-  sheet.style.width  = Math.round(vp.width)  + 'px';
-  sheet.style.height = Math.round(vp.height) + 'px';
+  if(!pdfDoc || !seiten.length) return;
+  berechneBlatt();
   $('#zlbl').textContent = Math.round(scale*100) + ' %';
   /* Beim Seitenwechsel ohne Verzögerung zeichnen; beim Scrollen und Zoomen
      bleibt die kurze Sammelpause, sonst würde ständig neu gerechnet. */
@@ -930,48 +1021,96 @@ function scheduleRender(){
   renderTimer = setTimeout(renderVisible, 60);
 }
 
+function aufgabenAbbrechen(){
+  laufendeAufgaben.forEach(function(t){ try{ t.cancel(); }catch(e){} });
+  laufendeAufgaben = [];
+}
+
 function renderVisible(){
-  if(!pageObj) return;
-  var vp = pageObj.getViewport({ scale: scale });
-  var sw = Math.round(vp.width), sh = Math.round(vp.height);
-  var vw = Math.min(stage.clientWidth, sw);
-  var vh = Math.min(stage.clientHeight, sh);
-  var ox = Math.max(0, Math.min(stage.scrollLeft - sheet.offsetLeft, sw - vw));
-  var oy = Math.max(0, Math.min(stage.scrollTop - sheet.offsetTop, sh - vh));
+  if(!pdfDoc || !seiten.length) return;
+  var st = scrollStand(), ox = st.ox, oy = st.oy;
 
   [base, over].forEach(function(c){
     c.style.left = ox + 'px'; c.style.top = oy + 'px';
-    c.style.width = vw + 'px'; c.style.height = vh + 'px';
-    c.width  = Math.max(1, Math.round(vw*dpr));
-    c.height = Math.max(1, Math.round(vh*dpr));
+    c.style.width = st.vw + 'px'; c.style.height = st.vh + 'px';
+    c.width  = Math.max(1, Math.round(st.vw * dpr));
+    c.height = Math.max(1, Math.round(st.vh * dpr));
   });
 
-  if(renderTask){ try{ renderTask.cancel(); }catch(e){} }
+  aufgabenAbbrechen();
+  var lauf = ++zeichenLauf;
   var ctx = base.getContext('2d');
   ctx.setTransform(1,0,0,1,0,0);
-  ctx.fillStyle = '#fff';
-  ctx.fillRect(0,0,base.width,base.height);
+  ctx.clearRect(0, 0, base.width, base.height);
 
-  var task = pageObj.render({
-    canvasContext: ctx,
-    viewport: vp,
-    transform: [dpr, 0, 0, dpr, -ox*dpr, -oy*dpr]
+  var liste = sichtbareSeiten(oy, st.vh);
+
+  /* Leere Blattflächen sofort füllen, damit man beim Scrollen nicht ins
+     Dunkle schaut, während die Seiten noch gerechnet werden. */
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.translate(-ox, -oy);
+  ctx.fillStyle = '#fff';
+  liste.forEach(function(n){
+    var i = n - 1;
+    ctx.fillRect(seiteX(i), seiten[i].y, Math.round(seiten[i].w * scale), seiteHoehe(i));
   });
-  renderTask = task;
-  task.promise.then(function(){
-    if(renderTask === task) renderTask = null;
-    drawOverlay(ox, oy, vp);
-  }, function(e){
-    if(e && e.name !== 'RenderingCancelledException') console.error(e);
+
+  /* Seitenanzeige mitführen: was in der Mitte des Fensters steht, gilt. */
+  var mitte = seiteBeiY(oy + st.vh / 2);
+  if(mitte !== pageNo){
+    pageNo = mitte;
+    if(document.activeElement !== $('#pgin')) $('#pgin').value = pageNo;
+  }
+
+  /* pdf.js lässt auf einer Zeichenfläche immer nur einen Auftrag zu.
+     Die sichtbaren Seiten werden deshalb nacheinander gezeichnet, und ein
+     neuer Durchlauf wartet, bis der vorige abgeräumt ist. */
+  zeichenKette = zeichenKette.catch(function(){}).then(function(){
+    return zeichneNacheinander(liste, ox, oy, lauf);
   });
-  drawOverlay(ox, oy, vp);
+
+  drawOverlay(ox, oy);
+}
+
+function zeichneNacheinander(liste, ox, oy, lauf){
+  var k = 0;
+  function weiter(){
+    if(lauf !== zeichenLauf || k >= liste.length) return Promise.resolve();
+    var n = liste[k++], i = n - 1;
+    return seiteHolen(n).then(function(page){
+      if(lauf !== zeichenLauf) return;
+      var ctx = base.getContext('2d');
+      ctx.setTransform(1, 0, 0, 1, 0, 0);
+      var t = page.render({
+        canvasContext: ctx,
+        viewport: page.getViewport({ scale: scale }),
+        transform: [dpr, 0, 0, dpr, (seiteX(i) - ox) * dpr, (seiten[i].y - oy) * dpr],
+        /* Ohne diese Angabe malt pdf.js zuerst die komplette Fläche weiß aus
+           und löscht damit die Nachbarseiten und die Lücken dazwischen. */
+        background: 'rgba(0,0,0,0)'
+      });
+      laufendeAufgaben.push(t);
+      /* Textteile nur holen, wenn auf dieser Seite etwas markiert werden muss. */
+      if(!geomSpeicher[n] && hits.some(function(h){ return h.page === n; })){
+        geomFuer(page, n).then(function(){
+          if(lauf === zeichenLauf) drawOverlay(ox, oy);
+        });
+      }
+      return t.promise.then(function(){
+        if(lauf === zeichenLauf) drawOverlay(ox, oy);
+      }, function(e){
+        if(e && e.name !== 'RenderingCancelledException') console.error(e);
+      });
+    }).then(weiter);
+  }
+  return weiter();
 }
 
 /* ---------------- Treffer einrahmen ---------------- */
-function rectsFor(hit, vp){
+function rectsFor(hit, vp, g){
   var out = [];
-  if(!pageGeom) return out;
-  var items = pageGeom.items, offs = pageGeom.offs;
+  if(!g) return out;
+  var items = g.items, offs = g.offs;
   for(var i=0;i<items.length;i++){
     var s0 = offs[i], len = items[i].str.length, s1 = s0 + len;
     if(len === 0 || s1 <= hit.start || s0 >= hit.end) continue;
@@ -1026,23 +1165,32 @@ function mergeRects(rs){
   return out;
 }
 
-function drawOverlay(ox, oy, vp){
-  if(!pageObj || !over.width) return;
-  if(vp === undefined){
-    vp = pageObj.getViewport({ scale: scale });
+function drawOverlay(ox, oy){
+  if(!over.width || !seiten.length) return;
+  if(ox === undefined){
     ox = parseFloat(over.style.left) || 0;
     oy = parseFloat(over.style.top) || 0;
   }
   var ctx = over.getContext('2d');
   ctx.setTransform(1,0,0,1,0,0);
   ctx.clearRect(0,0,over.width,over.height);
-  ctx.setTransform(dpr,0,0,dpr,0,0);
-  ctx.translate(-ox, -oy);
+  if(!hits.length) return;
 
   var active = hits[hitIdx];
-  pageHits.forEach(function(h){
+  var vh = parseFloat(over.style.height) || stage.clientHeight;
+
+  sichtbareSeiten(oy, vh).forEach(function(n){
+  var g = geomSpeicher[n], page = seitenSpeicher[n];
+  if(!g || !page) return;
+  var i = n - 1;
+  var vp = page.getViewport({ scale: scale });
+  /* Ursprung auf die linke obere Ecke genau dieser Seite legen */
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.translate(seiteX(i) - ox, seiten[i].y - oy);
+
+  hits.filter(function(h){ return h.page === n; }).forEach(function(h){
     var on = !!active && h.page === active.page && h.start === active.start;
-    mergeRects(rectsFor(h, vp)).forEach(function(r){
+    mergeRects(rectsFor(h, vp, g)).forEach(function(r){
       var t   = markGroesse;                       // 0 = eng, 1 = großer Ring
       var pad = Math.max(3, r.fh * (0.45 + t*8));
       ctx.save();
@@ -1070,10 +1218,11 @@ function drawOverlay(ox, oy, vp){
       ctx.restore();
     });
   });
+  });
 }
 
-function centerOf(hit, vp){
-  var rs = mergeRects(rectsFor(hit, vp));
+function centerOf(hit, vp, g){
+  var rs = mergeRects(rectsFor(hit, vp, g));
   if(!rs.length) return null;
   var r = rs[0];
   var lx = (r.x0 + r.x1)/2, ly = -r.fh/2;
@@ -1089,17 +1238,21 @@ function goToHit(i){
   hitIdx = (i + hits.length) % hits.length;
   var h = hits[hitIdx];
   markActive();
-  var after = function(){
-    var vp = pageObj.getViewport({ scale: scale });
-    var c = centerOf(h, vp);
-    if(c){
-      stage.scrollLeft = sheet.offsetLeft + c.x - stage.clientWidth/2;
-      stage.scrollTop  = sheet.offsetTop  + c.y - stage.clientHeight/2;
-    }
-    renderVisible();
-  };
-  if(h.page !== pageNo || !pageGeom) showPage(h.page).then(after);
-  else after();
+  var i = h.page - 1;
+  if(!seiten[i]) return;
+  return seiteHolen(h.page).then(function(page){
+    return geomFuer(page, h.page).then(function(g){
+      var c = centerOf(h, page.getViewport({ scale: scale }), g);
+      if(c){
+        stage.scrollLeft = sheet.offsetLeft + seiteX(i) + c.x - stage.clientWidth/2;
+        stage.scrollTop  = sheet.offsetTop  + seiten[i].y + c.y - stage.clientHeight/2;
+      } else {
+        stage.scrollTop = sheet.offsetTop + seiten[i].y;
+      }
+      clearTimeout(renderTimer);
+      renderVisible();
+    });
+  });
 }
 
 /* ---------------- Bedienung ---------------- */
@@ -1145,13 +1298,19 @@ function setScale(s){
 $('#zin').onclick  = function(){ setScale(scale*1.35); };
 $('#zout').onclick = function(){ setScale(scale/1.35); };
 $('#zfit').onclick = function(){
-  if(!pageObj) return;
-  var vp1 = pageObj.getViewport({ scale: 1 });
-  setScale((stage.clientWidth - 48) / vp1.width);
+  if(!seiten.length) return;
+  var i = Math.max(0, Math.min(seiten.length-1, pageNo-1));
+  setScale((stage.clientWidth - 48) / seiten[i].w);
 };
 
 stage.addEventListener('scroll', scheduleRender, { passive:true });
 window.addEventListener('resize', function(){ layout(); });
+
+/* Wenn die App im Hintergrund war, ist die Zeichenfläche unter Umständen
+   leer - beim Zurückkommen einmal neu zeichnen. */
+document.addEventListener('visibilitychange', function(){
+  if(!document.hidden) layout(true);
+});
 
 /* Zoomen und dabei den Punkt unter Mauszeiger/Fingern festhalten */
 function zoomAufPunkt(neu, cx, cy, alt){
@@ -1460,14 +1619,32 @@ function b64ToBytes(b64){
 function ladeFestenPlan(){
   if(!PLAN_DATEI || location.protocol === 'file:') return Promise.resolve(false);
   setStatus('Plan wird geladen …', 0);
+  var meldung = '';
   return fetch(PLAN_DATEI).then(function(r){
-    if(!r.ok) throw new Error('nicht da (' + r.status + ')');
+    if(r.status === 404){
+      meldung = '„' + PLAN_DATEI + '“ liegt nicht neben der App. Genaue Schreibweise beachten - alles klein.';
+      throw new Error('404');
+    }
+    if(!r.ok){
+      meldung = '„' + PLAN_DATEI + '“ konnte nicht geladen werden (Fehler ' + r.status + ').';
+      throw new Error(String(r.status));
+    }
     return r.arrayBuffer();
   }).then(function(buf){
+    /* Wirklich eine PDF? Jede PDF beginnt mit %PDF. Kommt hier etwas
+       anderes an, ist meist eine Fehlerseite geliefert worden. */
+    var kopf = new Uint8Array(buf, 0, Math.min(5, buf.byteLength));
+    var anfang = String.fromCharCode.apply(null, kopf);
+    if(anfang.indexOf('%PDF') !== 0){
+      meldung = '„' + PLAN_DATEI + '“ ist keine PDF-Datei (oder wurde nicht vollständig hochgeladen).';
+      throw new Error('keinePdf');
+    }
     if(oeffnetGerade) return true;
     $('#docname').textContent = PLAN_DATEI;
     return openData(buf, 'datei').then(function(){ return true; });
-  }).catch(function(){
+  }).catch(function(e){
+    if(meldung) setStatus(meldung);
+    console.warn('Fester Plan nicht geladen:', e);
     return false;
   });
 }
@@ -1514,10 +1691,9 @@ window.Suchhilfe = {
   zeiten: function(){ return ZEIT; },
   seite: function(n){ return showPage(n); },
   state: function(){
-    var vp = pageObj ? pageObj.getViewport({ scale: scale }) : null;
     return {
-      page: pageNo, scale: scale, hitIdx: hitIdx,
-      center: (vp && hits[hitIdx]) ? centerOf(hits[hitIdx], vp) : null,
+      page: pageNo, scale: scale, hitIdx: hitIdx, seiten: seiten.length,
+      blatt: { b: blattBreite, h: blattHoehe },
       scroll: { x: stage.scrollLeft, y: stage.scrollTop, w: stage.clientWidth, h: stage.clientHeight }
     };
   }
