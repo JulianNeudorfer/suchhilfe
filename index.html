@@ -155,6 +155,24 @@
     padding:6px 8px; outline:none; font-size:12.5px;
   }
   .tools .farblbl{color:var(--tx2); font-size:12.5px; margin-left:4px}
+
+  /* Ausklappbarer Einstellungs-Reiter */
+  #einstellungen{
+    display:flex; flex-direction:column; gap:10px; padding:12px 14px;
+    background:var(--bg2); border-bottom:1px solid var(--line);
+  }
+  #einstellungen[hidden]{display:none !important}
+  #einstellungen .zeile{display:flex; align-items:center; gap:10px; font-size:12.5px; color:var(--tx2)}
+  #einstellungen .zeile > span{flex:0 0 78px}
+  #einstellungen select{
+    flex:1; min-width:0; background:var(--bg); border:1px solid var(--line);
+    border-radius:7px; padding:7px 8px; outline:none;
+  }
+  #einstellungen select:focus{border-color:var(--acc)}
+  #einstellungen .knoepfe{gap:8px}
+  #einstellungen .knoepfe .btn{flex:1}
+  #einstellungen .hint{margin:0}
+  #einstell.auf{background:var(--acc); border-color:var(--acc); color:#241300; font-weight:600}
   .tools .btn.klein{padding:6px 11px; font-size:12.5px; margin-left:auto}
 
   /* „Nur Plan": Kopfzeile und Seitenleiste weg, der Plan bekommt alles.
@@ -224,6 +242,31 @@
   #klapp{display:none; margin-left:auto; background:none; border:1px solid var(--line);
          border-radius:6px; padding:3px 9px; color:var(--tx2); font-size:12px}
 
+  /* Querformat am Handy: wenig Höhe, dafür Breite. Seitenleiste bleibt
+     links stehen, alles Hohe wird flacher. */
+  @media (max-height:540px) and (min-width:660px){
+    header{padding:5px 12px; gap:10px}
+    .logo{font-size:12px}
+    .docname{display:none}
+    aside{width:250px; flex:0 0 250px}
+    .pad{padding:8px}
+    .search input{padding:7px 10px; font-size:14px}
+    .status{min-height:32px; padding:5px 12px}
+    .tools{padding:4px 8px; gap:4px}
+    .tools .grp{padding:2px}
+    .tools .grp button{padding:4px 8px}
+    .tools .grp span{padding:0 5px}
+    .tools input[type=range]{width:72px}
+    .tools .farblbl{display:none}          /* Wort „Größe" weg, Regler bleibt */
+    #einstellungen{padding:8px 12px; gap:7px}
+    #sheet{margin:6px auto}
+  }
+
+  /* Im Vollbild am Startbildschirm die Aussparungen links/rechts beachten */
+  body.startbildschirm main{
+    padding-left:env(safe-area-inset-left); padding-right:env(safe-area-inset-right);
+  }
+
   @media (max-width:760px){
     header{flex-wrap:wrap; gap:8px; padding:8px 10px}
     .logo{font-size:13px}
@@ -279,16 +322,6 @@
         <input id="q" placeholder="zuerst eine PDF öffnen" autocomplete="off" spellcheck="false" disabled>
         <button class="btn main" id="go" disabled>Suchen</button>
       </div>
-      <label class="chk"><input type="checkbox" id="loose"> Trennzeichen egal (12/06 = 12-06 = 1206)</label>
-      <div class="opt">
-        <span>Treffer:</span>
-        <select id="genauigkeit" title="Wie genau die Nummer passen muss">
-          <option value="anfang">Nummer darf länger sein</option>
-          <option value="genau">Nur die ganze Nummer</option>
-          <option value="frei">Auch mittendrin</option>
-        </select>
-      </div>
-      <div class="hint" id="hinweis"></div>
     </div>
 
     <div class="status" id="status">
@@ -308,7 +341,7 @@
         <button id="prevpg" title="Seite zurück">◀</button>
         <input class="pg" id="pgin" value="–" disabled>
         <span id="pgtotal">/ –</span>
-        <button id="nextpg" title="Seite vor">▶</button>
+        <button id="nextpg" title="Nächstes Blatt - bei laufender Suche das nächste mit Treffer">▶</button>
       </div>
       <div class="grp">
         <button id="zout" title="Kleiner">−</button>
@@ -321,18 +354,37 @@
         <span id="hitlbl">kein Treffer</span>
         <button id="nexthit" title="Nächster Treffer">▶</button>
       </div>
-      <span class="farblbl">Markierung</span>
-      <select id="farbe" title="Farbe der Markierung">
-        <option value="orange">Signal-Orange</option>
-        <option value="magenta">Magenta</option>
-        <option value="gruen">Neon-Grün</option>
-        <option value="cyan">Cyan</option>
-        <option value="blau">Signal-Blau</option>
-      </select>
       <span class="farblbl">Größe</span>
       <input type="range" id="groesse" min="0" max="100" value="15" title="Größe der Markierung">
-      <button class="btn klein" id="nurplan" title="Kopfzeile und Suchfeld ausblenden - der Plan bekommt den ganzen Platz">Nur Plan</button>
-      <button class="btn klein" id="infoauf" title="Zeigt, was gerade geladen ist - hilfreich bei Problemen">?</button>
+      <button class="btn klein" id="einstell" title="Einstellungen ein- und ausklappen">Einstellungen ▾</button>
+    </div>
+
+    <!-- Ausklappbarer Reiter: alles, was man selten braucht -->
+    <div id="einstellungen" hidden>
+      <div class="zeile">
+        <span>Markierung</span>
+        <select id="farbe" title="Farbe der Markierung">
+          <option value="orange">Signal-Orange</option>
+          <option value="magenta">Magenta</option>
+          <option value="gruen">Neon-Grün</option>
+          <option value="cyan">Cyan</option>
+          <option value="blau">Signal-Blau</option>
+        </select>
+      </div>
+      <div class="zeile">
+        <span>Treffer</span>
+        <select id="genauigkeit" title="Wie genau die Nummer passen muss">
+          <option value="anfang">Nummer darf länger sein</option>
+          <option value="genau">Nur die ganze Nummer</option>
+          <option value="frei">Auch mittendrin</option>
+        </select>
+      </div>
+      <label class="chk"><input type="checkbox" id="loose"> Trennzeichen egal (12/06 = 12-06 = 1206)</label>
+      <div class="zeile knoepfe">
+        <button class="btn" id="nurplan" title="Kopfzeile und Suchfeld ausblenden">Nur Plan</button>
+        <button class="btn" id="infoauf" title="Zeigt, was gerade geladen ist">Was ist los?</button>
+      </div>
+      <div class="hint" id="hinweis"></div>
     </div>
 
     <div id="neu" hidden>
@@ -404,6 +456,13 @@ var pageHits = [];          // Treffer, die gezeichnet werden
 var seiten = [];            // [{w,h}] Maße jeder Seite bei 100 %
 var reihe = [];             // angezeigte Blätter: [{n,y,hoehe,breite}]
 var nurTreffer = false;     // bei laufender Suche nur Seiten mit Treffern
+
+/* Gezeichnet wird ein Bereich, der rundum über das Fenster hinausgeht.
+   Solange man sich innerhalb davon bewegt, muss überhaupt nichts neu
+   gerechnet werden - das Bild wird einfach mitgescrollt. */
+var gemalt = null;          // {x1,y1,w1,h1,scale} - Bereich in 100%-Maßen
+var RAND = 0.45;            // Zuschlag ringsum, Anteil der Fenstergröße
+var MAX_PUNKTE = 14e6;      // Obergrenze für die Zeichenfläche
 var blattBreite = 0, blattHoehe = 0;
 var LUECKE = 10;            // Abstand zwischen zwei Blättern
 var seitenSpeicher = {};    // Seitenzahl -> pdf.js-Seite
@@ -1098,17 +1157,59 @@ function layout(sofort){
   if(!pdfDoc || !seiten.length) return;
   berechneBlatt();
   $('#zlbl').textContent = Math.round(scale*100) + ' %';
-  /* Beim Seitenwechsel ohne Verzögerung zeichnen; beim Scrollen und Zoomen
-     bleibt die kurze Sammelpause, sonst würde ständig neu gerechnet. */
-  if(sofort){ clearTimeout(renderTimer); renderVisible(); }
+  if(sofort){ clearTimeout(renderTimer); renderVisible(true); }
   else scheduleRender();
 }
 
-/* Es wird immer nur der sichtbare Ausschnitt gezeichnet.
-   Dadurch bleiben auch 900 % Zoom auf großen Plänen flüssig. */
+/* Das fertige Bild an die aktuelle Vergrößerung anpassen, ohne neu zu
+   rechnen: der Browser zieht die vorhandene Zeichenfläche einfach größer.
+   Dadurch folgt das Bild dem Zoom sofort, statt zu flackern. */
+function positioniereFlaechen(){
+  if(!gemalt) return;
+  var l = Math.round(gemalt.x1 * scale), t = Math.round(gemalt.y1 * scale);
+  var b = Math.round(gemalt.w1 * scale), h = Math.round(gemalt.h1 * scale);
+  [base, over].forEach(function(c){
+    c.style.left = l + 'px';  c.style.top = t + 'px';
+    c.style.width = b + 'px'; c.style.height = h + 'px';
+  });
+}
+
+function sichtFenster(){
+  var vw = Math.min(stage.clientWidth, blattBreite);
+  var vh = Math.min(stage.clientHeight, blattHoehe);
+  return {
+    x: Math.max(0, Math.min(stage.scrollLeft - sheet.offsetLeft, blattBreite - vw)),
+    y: Math.max(0, Math.min(stage.scrollTop  - sheet.offsetTop,  blattHoehe  - vh)),
+    w: vw, h: vh
+  };
+}
+
+/* Muss überhaupt neu gezeichnet werden? Nur wenn sich die Vergrößerung
+   geändert hat oder das Fenster den bereits gezeichneten Bereich verlässt. */
+function brauchtNeu(){
+  if(!gemalt) return true;
+  if(Math.abs(gemalt.scale - scale) > 0.001) return true;
+  var f = sichtFenster();
+  var x = gemalt.x1 * scale, y = gemalt.y1 * scale;
+  var b = gemalt.w1 * scale, h = gemalt.h1 * scale;
+  return f.x < x - 1 || f.y < y - 1 ||
+         f.x + f.w > x + b + 1 || f.y + f.h > y + h + 1;
+}
+
 function scheduleRender(){
   clearTimeout(renderTimer);
-  renderTimer = setTimeout(renderVisible, 60);
+  renderTimer = setTimeout(function(){ renderVisible(); }, 90);
+}
+
+/* Welche Seite steht gerade in der Mitte? Billig, läuft bei jedem Scrollen. */
+function seitenAnzeige(){
+  if(!reihe.length) return;
+  var f = sichtFenster();
+  var mitte = eintragBeiY(f.y + f.h/2);
+  if(mitte && mitte.n !== pageNo){
+    pageNo = mitte.n;
+    if(document.activeElement !== $('#pgin')) $('#pgin').value = pageNo;
+  }
 }
 
 function aufgabenAbbrechen(){
@@ -1116,7 +1217,7 @@ function aufgabenAbbrechen(){
   laufendeAufgaben = [];
 }
 
-function renderVisible(){
+function renderVisible(erzwingen){
   if(!pdfDoc || !reihe.length) return;
 
   /* Beim Start steht die Größe des Fensters manchmal noch nicht fest -
@@ -1124,18 +1225,38 @@ function renderVisible(){
      sonst bliebe die Fläche leer. */
   if(stage.clientWidth < 2 || stage.clientHeight < 2){
     clearTimeout(renderTimer);
-    renderTimer = setTimeout(renderVisible, 120);
+    renderTimer = setTimeout(function(){ renderVisible(true); }, 120);
     return;
   }
 
-  var st = scrollStand(), ox = st.ox, oy = st.oy;
+  /* Der wichtigste Teil fürs flüssige Scrollen: liegt das Fenster noch im
+     bereits gezeichneten Bereich, passiert hier gar nichts. */
+  if(!erzwingen && !brauchtNeu()){ drawOverlay(); return; }
+  ZEIT.rechnungen = (ZEIT.rechnungen || 0) + 1;
 
+  var f = sichtFenster();
+  var mx = Math.round(f.w * RAND), my = Math.round(f.h * RAND);
+  var ox = Math.max(0, f.x - mx), oy = Math.max(0, f.y - my);
+  var bw = Math.min(blattBreite - ox, f.w + 2*mx);
+  var bh = Math.min(blattHoehe  - oy, f.h + 2*my);
+
+  /* Zu große Flächen kosten auf dem Handy zu viel Speicher - dann ohne Rand. */
+  if(bw * bh * dpr * dpr > MAX_PUNKTE){
+    ox = f.x; oy = f.y; bw = f.w; bh = f.h;
+  }
+
+  var punkteB = Math.max(1, Math.round(bw * dpr));
+  var punkteH = Math.max(1, Math.round(bh * dpr));
   [base, over].forEach(function(c){
-    c.style.left = ox + 'px'; c.style.top = oy + 'px';
-    c.style.width = st.vw + 'px'; c.style.height = st.vh + 'px';
-    c.width  = Math.max(1, Math.round(st.vw * dpr));
-    c.height = Math.max(1, Math.round(st.vh * dpr));
+    /* Nur wirklich ändern, wenn nötig: jedes Setzen von width/height legt
+       die Zeichenfläche neu an und löscht sie. */
+    if(c.width !== punkteB || c.height !== punkteH){
+      c.width = punkteB; c.height = punkteH;
+    }
   });
+
+  gemalt = { x1: ox/scale, y1: oy/scale, w1: bw/scale, h1: bh/scale, scale: scale };
+  positioniereFlaechen();
 
   aufgabenAbbrechen();
   var lauf = ++zeichenLauf;
@@ -1143,7 +1264,7 @@ function renderVisible(){
   ctx.setTransform(1,0,0,1,0,0);
   ctx.clearRect(0, 0, base.width, base.height);
 
-  var liste = sichtbareEintraege(oy, st.vh);
+  var liste = sichtbareEintraege(oy, bh);
 
   /* Leere Blattflächen sofort füllen, damit man beim Scrollen nicht ins
      Dunkle schaut, während die Seiten noch gerechnet werden. */
@@ -1154,12 +1275,7 @@ function renderVisible(){
     ctx.fillRect(eintragX(e), e.y, e.breite, e.hoehe);
   });
 
-  /* Seitenanzeige mitführen: was in der Mitte des Fensters steht, gilt. */
-  var mitte = eintragBeiY(oy + st.vh / 2);
-  if(mitte && mitte.n !== pageNo){
-    pageNo = mitte.n;
-    if(document.activeElement !== $('#pgin')) $('#pgin').value = pageNo;
-  }
+  seitenAnzeige();
 
   /* pdf.js lässt auf einer Zeichenfläche immer nur einen Auftrag zu.
      Die sichtbaren Seiten werden deshalb nacheinander gezeichnet, und ein
@@ -1168,7 +1284,7 @@ function renderVisible(){
     return zeichneNacheinander(liste, ox, oy, lauf);
   });
 
-  drawOverlay(ox, oy);
+  drawOverlay();
 }
 
 function zeichneNacheinander(liste, ox, oy, lauf){
@@ -1192,11 +1308,11 @@ function zeichneNacheinander(liste, ox, oy, lauf){
       /* Textteile nur holen, wenn auf dieser Seite etwas markiert werden muss. */
       if(!geomSpeicher[n] && hits.some(function(h){ return h.page === n; })){
         geomFuer(page, n).then(function(){
-          if(lauf === zeichenLauf) drawOverlay(ox, oy);
+          if(lauf === zeichenLauf) drawOverlay();
         });
       }
       return t.promise.then(function(){
-        if(lauf === zeichenLauf) drawOverlay(ox, oy);
+        if(lauf === zeichenLauf) drawOverlay();
       }, function(e){
         if(e && e.name !== 'RenderingCancelledException') console.error(e);
       });
@@ -1264,21 +1380,22 @@ function mergeRects(rs){
   return out;
 }
 
-function drawOverlay(ox, oy){
-  if(!over.width || !seiten.length) return;
-  if(ox === undefined){
-    ox = parseFloat(over.style.left) || 0;
-    oy = parseFloat(over.style.top) || 0;
-  }
+function drawOverlay(){
+  if(!over.width || !seiten.length || !gemalt) return;
+  /* Während des Zoomens wird das vorhandene Bild nur gedehnt. Die
+     Markierungen dürfen dann nicht neu gerechnet werden, sonst passten sie
+     nicht mehr zum gedehnten Plan darunter. */
+  if(Math.abs(gemalt.scale - scale) > 0.001) return;
+
+  var ox = gemalt.x1 * scale, oy = gemalt.y1 * scale;
   var ctx = over.getContext('2d');
   ctx.setTransform(1,0,0,1,0,0);
   ctx.clearRect(0,0,over.width,over.height);
   if(!hits.length) return;
 
   var active = hits[hitIdx];
-  var vh = parseFloat(over.style.height) || stage.clientHeight;
 
-  sichtbareEintraege(oy, vh).forEach(function(e){
+  sichtbareEintraege(oy, gemalt.h1 * scale).forEach(function(e){
   var n = e.n;
   var g = geomSpeicher[n], page = seitenSpeicher[n];
   if(!g || !page) return;
@@ -1393,8 +1510,9 @@ $('#prevhit').onclick = function(){ goToHit(hitIdx-1); };
 $('#nexthit').onclick = function(){ goToHit(hitIdx+1); };
 
 function setScale(s){
-  scale = Math.max(0.25, Math.min(9, s));
-  layout();
+  /* Auf die Mitte des Fensters zoomen - dort schaut man hin. */
+  var box = stage.getBoundingClientRect();
+  zoomAufPunkt(s, box.left + stage.clientWidth/2, box.top + stage.clientHeight/2, zoomStand());
 }
 $('#zin').onclick  = function(){ setScale(scale*1.35); };
 $('#zout').onclick = function(){ setScale(scale/1.35); };
@@ -1404,8 +1522,19 @@ $('#zfit').onclick = function(){
   setScale((stage.clientWidth - 48) / seiten[i].w);
 };
 
-stage.addEventListener('scroll', scheduleRender, { passive:true });
-window.addEventListener('resize', function(){ layout(); });
+stage.addEventListener('scroll', function(){
+  seitenAnzeige();     // billig, darf bei jedem Scrollen laufen
+  scheduleRender();    // prüft selbst, ob überhaupt etwas zu tun ist
+}, { passive:true });
+
+/* Drehen des Handys oder Größenänderung: neu aufbauen */
+window.addEventListener('resize', function(){ layout(true); });
+if(window.matchMedia){
+  var quer = matchMedia('(orientation: landscape)');
+  var beiDrehung = function(){ setTimeout(function(){ layout(true); }, 250); };
+  if(quer.addEventListener) quer.addEventListener('change', beiDrehung);
+  else if(quer.addListener) quer.addListener(beiDrehung);
+}
 
 /* Wenn die App im Hintergrund war, ist die Zeichenfläche unter Umständen
    leer - beim Zurückkommen einmal neu zeichnen. */
@@ -1420,9 +1549,24 @@ function zoomAufPunkt(neu, cx, cy, alt){
   var px = (alt.sl + vx - alt.left) / alt.scale;   // Punkt auf dem Blatt
   var py = (alt.st + vy - alt.top ) / alt.scale;
   scale = Math.max(0.25, Math.min(9, neu));
-  layout();
+
+  /* Nur die Maße nachziehen und das vorhandene Bild mitdehnen - kein
+     Neurechnen. Scharf gezeichnet wird erst, wenn die Finger still halten. */
+  berechneBlatt();
+  positioniereFlaechen();
+  $('#zlbl').textContent = Math.round(scale*100) + ' %';
   stage.scrollLeft = px*scale + sheet.offsetLeft - vx;
   stage.scrollTop  = py*scale + sheet.offsetTop  - vy;
+  seitenAnzeige();
+  nachzeichnenSpaeter();
+}
+
+/* Nach dem Zoomen einmal sauber nachrechnen */
+var nachzeichnenUhr = null;
+function nachzeichnenSpaeter(){
+  clearTimeout(nachzeichnenUhr);
+  clearTimeout(renderTimer);
+  nachzeichnenUhr = setTimeout(function(){ renderVisible(true); }, 220);
 }
 function zoomStand(){
   return { sl:stage.scrollLeft, st:stage.scrollTop,
@@ -1442,10 +1586,39 @@ var griff = null;
 function fingerAbstand(t){
   return Math.hypot(t[0].clientX - t[1].clientX, t[0].clientY - t[1].clientY);
 }
+/* Nachlauf nach dem Loslassen - ohne das bleibt der Plan abrupt stehen
+   und das Schieben fühlt sich hakelig an. */
+var schwung = null;
+function schwungStoppen(){
+  if(schwung){ cancelAnimationFrame(schwung); schwung = null; }
+}
+function schwungStarten(vx, vy){
+  if(Math.abs(vx) < 0.12 && Math.abs(vy) < 0.12) return;
+  var zuletzt = performance.now();
+  function schritt(){
+    var jetzt = performance.now();
+    var dt = Math.min(34, jetzt - zuletzt);
+    zuletzt = jetzt;
+    var bremse = Math.pow(0.94, dt/16);
+    vx *= bremse; vy *= bremse;
+    if(Math.abs(vx) < 0.04 && Math.abs(vy) < 0.04){ schwung = null; return; }
+    stage.scrollLeft -= vx * dt;
+    stage.scrollTop  -= vy * dt;
+    schwung = requestAnimationFrame(schritt);
+  }
+  schwung = requestAnimationFrame(schritt);
+}
+
+function griffSchieben(t){
+  return { art:'schieben', x:t.clientX, y:t.clientY,
+           sl:stage.scrollLeft, st:stage.scrollTop,
+           zeit:performance.now(), vx:0, vy:0 };
+}
+
 stage.addEventListener('touchstart', function(e){
+  schwungStoppen();
   if(e.touches.length === 1){
-    griff = { art:'schieben', x:e.touches[0].clientX, y:e.touches[0].clientY,
-              sl:stage.scrollLeft, st:stage.scrollTop };
+    griff = griffSchieben(e.touches[0]);
   } else if(e.touches.length === 2){
     griff = { art:'zoomen', d:fingerAbstand(e.touches), stand:zoomStand(),
               cx:(e.touches[0].clientX + e.touches[1].clientX)/2,
@@ -1457,8 +1630,15 @@ stage.addEventListener('touchmove', function(e){
   if(!griff) return;
   e.preventDefault();
   if(griff.art === 'schieben' && e.touches.length === 1){
-    stage.scrollLeft = griff.sl - (e.touches[0].clientX - griff.x);
-    stage.scrollTop  = griff.st - (e.touches[0].clientY - griff.y);
+    var t = e.touches[0];
+    var jetzt = performance.now(), dt = Math.max(1, jetzt - griff.zeit);
+    if(griff.lx !== undefined){
+      griff.vx = (t.clientX - griff.lx) / dt;
+      griff.vy = (t.clientY - griff.ly) / dt;
+    }
+    griff.lx = t.clientX; griff.ly = t.clientY; griff.zeit = jetzt;
+    stage.scrollLeft = griff.sl - (t.clientX - griff.x);
+    stage.scrollTop  = griff.st - (t.clientY - griff.y);
   } else if(griff.art === 'zoomen' && e.touches.length === 2){
     var f = fingerAbstand(e.touches) / griff.d;
     zoomAufPunkt(griff.stand.scale * f, griff.cx, griff.cy, griff.stand);
@@ -1466,10 +1646,12 @@ stage.addEventListener('touchmove', function(e){
 }, { passive:false });
 
 stage.addEventListener('touchend', function(e){
-  if(e.touches.length === 0) griff = null;
-  else if(e.touches.length === 1){
-    griff = { art:'schieben', x:e.touches[0].clientX, y:e.touches[0].clientY,
-              sl:stage.scrollLeft, st:stage.scrollTop };
+  if(e.touches.length === 0){
+    if(griff && griff.art === 'schieben') schwungStarten(griff.vx || 0, griff.vy || 0);
+    else if(griff && griff.art === 'zoomen') nachzeichnenSpaeter();
+    griff = null;
+  } else if(e.touches.length === 1){
+    griff = griffSchieben(e.touches[0]);
   }
 }, { passive:false });
 
@@ -1538,6 +1720,15 @@ function bakePlan(){
 $('#bake').onclick = bakePlan;
 
 $('#neuladen').onclick = function(){ location.reload(); };
+
+$('#einstell').onclick = function(){
+  var auf = $('#einstellungen').hidden;
+  $('#einstellungen').hidden = !auf;
+  this.textContent = auf ? 'Einstellungen ▴' : 'Einstellungen ▾';
+  this.classList.toggle('auf', auf);
+  try{ localStorage.setItem('planfinder-einstell', auf ? '1' : '0'); }catch(e){}
+  layout(true);
+};
 
 $('#nurplan').onclick = function(){
   var an = document.body.classList.toggle('nurplan');
@@ -1769,6 +1960,11 @@ try{
   if(localStorage.getItem('planfinder-nurplan') === '1'){
     document.body.classList.add('nurplan');
     $('#nurplan').textContent = 'Suche zeigen';
+  }
+  if(localStorage.getItem('planfinder-einstell') === '1'){
+    $('#einstellungen').hidden = false;
+    $('#einstell').textContent = 'Einstellungen ▴';
+    $('#einstell').classList.add('auf');
   }
 }catch(e){}
 setGenauigkeit($('#genauigkeit').value, false);
