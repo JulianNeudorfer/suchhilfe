@@ -72,6 +72,14 @@
   }
   .logo{font-weight:700; letter-spacing:.3px; white-space:nowrap}
   .logo span{color:var(--acc)}
+  /* Fassungszeichen: muss immer sichtbar sein, sonst weiß niemand,
+     welche Fassung gerade läuft. */
+  .logo b{
+    font-weight:600; font-size:11px; color:var(--tx2); letter-spacing:.2px;
+    background:var(--bg3); border:1px solid var(--line); border-radius:5px;
+    padding:1px 5px; margin-left:4px; vertical-align:2px; cursor:pointer;
+  }
+  .logo b:hover{border-color:var(--acc); color:var(--acc)}
   .docname{color:var(--tx2); font-size:13px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
   .btn{
     background:var(--bg3); border:1px solid var(--line); border-radius:8px;
@@ -306,7 +314,7 @@
 </div>
 
 <header>
-  <div class="logo">Such<span>hilfe</span></div>
+  <div class="logo">Such<span>hilfe</span> <b id="fassungszeichen" title="Fassung - antippen für Einzelheiten">?</b></div>
   <button class="btn main" id="pick">PDF öffnen</button>
   <input type="file" id="file" accept="application/pdf,.pdf" hidden>
   <div class="docname" id="docname">keine Datei geladen</div>
@@ -1870,9 +1878,36 @@ function appSymbol(){
      und wird still übersprungen. */
   if('serviceWorker' in navigator &&
      (location.protocol === 'https:' || location.hostname === 'localhost')){
-    navigator.serviceWorker.register('sw.js').catch(function(){});
+    navigator.serviceWorker.register('sw.js').then(function(reg){
+      /* Bei jedem Start nachsehen, ob es eine neue Fassung gibt. Ohne das
+         prüft der Browser teils einen ganzen Tag lang nicht nach.
+         Ohne Empfang scheitert das - das ist in Ordnung und muss still
+         abgefangen werden, sonst landet bei jedem Start ein Fehler im
+         Protokoll. */
+      try{
+        var p = reg.update();
+        if(p && p.catch) p.catch(function(){});
+      }catch(e){}
+    }).catch(function(){});
+
+    /* Übernimmt ein neuer Helfer das Ruder, einmal neu laden - sonst läuft
+       die Seite mit alter Anzeige weiter. Nur ein einziges Mal, sonst
+       drehte sich das im Kreis. */
+    navigator.serviceWorker.addEventListener('controllerchange', function(){
+      var marke = 'suchhilfe-neugeladen';
+      try{
+        if(sessionStorage.getItem(marke) === '1') return;
+        sessionStorage.setItem(marke, '1');
+      }catch(e){}
+      location.reload();
+    });
+
     navigator.serviceWorker.addEventListener('message', function(e){
-      if(e.data && e.data.typ === 'neueFassung') $('#neu').hidden = false;
+      if(!e.data) return;
+      if(e.data.typ === 'neueFassung' && e.data.fassung && e.data.fassung !== FASSUNG){
+        $('#neu').hidden = false;
+      }
+      if(e.data.fassung) DIAG.swFassung = e.data.fassung;
     });
   }
 })();
@@ -1881,8 +1916,23 @@ function appSymbol(){
    Sammelt die Angaben, die bei Problemen weiterhelfen, und kann den
    gesamten Zwischenspeicher löschen - das behebt fast alle Fälle, in denen
    das Handy an einer alten Fassung festhängt. */
-var FASSUNG = '7. September 2026';
-var DIAG = { plan: 'noch nichts geladen', sw: 'wird geprüft …' };
+var FASSUNG = '2026-10-14-2';
+var DIAG = { plan: 'noch nichts geladen', sw: 'wird geprüft …', swFassung: '-' };
+
+/* Fassung sofort sichtbar machen - das ist die einzige Möglichkeit, von
+   außen zu erkennen, ob eine neu hochgeladene Datei wirklich angekommen ist. */
+(function(){
+  var zeichen = $('#fassungszeichen');
+  if(zeichen) zeichen.textContent = FASSUNG;
+  /* Die Nummer in der Adresse hat ihren Zweck erfüllt - weg damit, sonst
+     merkt sich der Startbildschirm eine Adresse, die nie aus dem Speicher
+     bedient werden kann. */
+  try{
+    if(location.search && history.replaceState){
+      history.replaceState({}, '', location.pathname);
+    }
+  }catch(e){}
+})();
 
 function infoText(){
   var zeilen = [
@@ -1897,7 +1947,7 @@ function infoText(){
     'Zeichenfläche: ' + base.width + ' x ' + base.height + ' Punkte',
     'Vergrößerung: ' + Math.round(scale*100) + ' %',
     'Rechenteil: ' + (window.pdfjsWorker ? 'im Hauptfenster' : 'eigener Worker'),
-    'Offline-Speicher: ' + DIAG.sw,
+    'Offline-Speicher: ' + DIAG.sw + ', Fassung dort: ' + DIAG.swFassung,
     'Gerät: ' + navigator.userAgent
   ];
   return zeilen.join('\n');
@@ -1905,6 +1955,7 @@ function infoText(){
 
 function speicherLeeren(){
   var schritte = [];
+  try{ sessionStorage.removeItem('suchhilfe-neugeladen'); }catch(e){}
   try{
     if(navigator.serviceWorker){
       schritte.push(navigator.serviceWorker.getRegistrations().then(function(rs){
@@ -1921,14 +1972,22 @@ function speicherLeeren(){
   }catch(e){}
   try{ indexedDB.deleteDatabase('planfinder'); }catch(e){}
   Promise.all(schritte).catch(function(){}).then(function(){
-    setTimeout(function(){ location.reload(); }, 300);
+    /* Entscheidend: NICHT einfach neu laden. Ein normales Neuladen darf der
+       Browser aus seinem eigenen Zwischenspeicher bedienen - dann käme
+       wieder dieselbe alte Datei. Mit angehängter Nummer ist es für ihn
+       eine neue Adresse und er muss sie beim Server holen. */
+    setTimeout(function(){
+      location.replace(location.pathname + '?frisch=' + Date.now());
+    }, 300);
   });
 }
 
-$('#infoauf').onclick = function(){
+function infoZeigen(){
   $('#infotext').textContent = infoText();
   $('#info').hidden = false;
-};
+}
+$('#infoauf').onclick = infoZeigen;
+$('#fassungszeichen').onclick = infoZeigen;   // Fassungszeichen antippen reicht
 $('#infozu').onclick = function(){ $('#info').hidden = true; };
 $('#infokopieren').onclick = function(){
   var b = this;
@@ -1944,6 +2003,10 @@ try{
     navigator.serviceWorker.getRegistrations().then(function(rs){
       DIAG.sw = rs.length ? 'aktiv' : 'nicht eingerichtet';
     });
+    /* den Helfer nach seiner eigenen Fassung fragen */
+    if(navigator.serviceWorker.controller){
+      navigator.serviceWorker.controller.postMessage('fassung?');
+    }
   } else { DIAG.sw = 'vom Browser nicht angeboten'; }
 }catch(e){ DIAG.sw = 'nicht verfügbar'; }
 
