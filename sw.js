@@ -12,7 +12,7 @@
    - Die Lagernummer steckt im Namen. Wird sie erhöht, wirft der Browser
      beim nächsten Start alles Alte weg. */
 
-var FASSUNG = '2026-10-14-2';
+var FASSUNG = '2026-10-14-3';
 var LAGER   = 'suchhilfe-' + FASSUNG;
 var DATEIEN = ['./', './index.html', './plan.pdf'];
 var GEDULD  = 2000;

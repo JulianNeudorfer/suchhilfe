@@ -80,6 +80,15 @@
     padding:1px 5px; margin-left:4px; vertical-align:2px; cursor:pointer;
   }
   .logo b:hover{border-color:var(--acc); color:var(--acc)}
+
+  /* Ersatz-Fassungsnummer in der Werkzeugleiste - nur sichtbar, wenn die
+     Kopfzeile ausgeblendet ist („Nur Plan"). */
+  .tools .fassung{
+    display:none; font-weight:600; font-size:11px; color:var(--tx2);
+    background:var(--bg3); border:1px solid var(--line); border-radius:5px;
+    padding:3px 6px; cursor:pointer;
+  }
+  body.nurplan .tools .fassung{display:inline-block}
   .docname{color:var(--tx2); font-size:13px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
   .btn{
     background:var(--bg3); border:1px solid var(--line); border-radius:8px;
@@ -275,25 +284,45 @@
     padding-left:env(safe-area-inset-left); padding-right:env(safe-area-inset-right);
   }
 
+  /* ---- Handy, Hochformat ----
+     Oberste Regel: der Plan bekommt so viel Platz wie irgend möglich.
+     Alles, was nicht bei jeder Suche gebraucht wird, verschwindet oder
+     wandert in den Einstellungs-Reiter. */
   @media (max-width:760px){
-    header{flex-wrap:wrap; gap:8px; padding:8px 10px}
-    .logo{font-size:13px}
-    .docname{order:5; width:100%; font-size:12px}
+    header{flex-wrap:nowrap; gap:8px; padding:5px 10px}
+    .logo{font-size:13px; white-space:nowrap}
+    .docname{display:none}                    /* steht in der Diagnose */
+    #copy{display:none}                       /* liegt im Einstellungs-Reiter */
     #bake{display:none}                       /* Datei-Download bringt am Handy nichts */
+    #pick{padding:5px 10px; font-size:13px}
     main{flex-direction:column}
     aside{width:auto; flex:0 0 auto; border-right:none; border-bottom:1px solid var(--line)}
-    .pad{padding:10px}
+    .pad{padding:7px 9px}
     .hint{display:none}
     /* iOS zoomt in Eingabefelder unter 16px hinein - das verhindern wir */
-    .search input{font-size:16px}
-    .results{max-height:34vh}
-    #klapp{display:block}
+    .search{gap:6px}
+    .search input{font-size:16px; padding:7px 10px}
+    .search .btn{padding:7px 12px}
+    .status{min-height:0; padding:5px 10px; font-size:12px; gap:8px}
+    .results{max-height:30vh}
+    #klapp{display:block; padding:2px 8px}
     body.listeZu .results{display:none}
-    .tools{gap:5px; padding:6px 8px; font-size:12px}
-    .tools .grp button{padding:7px 11px}
-    .tools select{padding:6px}
-    .tools input[type=range]{width:96px}
-    #sheet{margin:8px auto}
+    .tools{gap:4px; padding:4px 7px; font-size:12px}
+    .tools .grp{padding:2px}
+    .tools .grp button{padding:5px 9px}
+    .tools .grp span{padding:0 5px}
+    .tools .btn.klein{padding:5px 9px; margin-left:0}
+    /* Das Wort „Größe" weg - der Regler ist der einzige und trägt die
+       Markierfarbe. Damit passt die Leiste auf zwei statt drei Zeilen. */
+    .tools .farblbl{display:none}
+    /* Ohne Treffer braucht die leere Liste keinen Platz */
+    .results.leer{display:none}
+    .tools select{padding:5px}
+    .tools input[type=range]{width:84px}
+    .tools .fassung{padding:2px 5px}
+    #einstellungen{padding:9px 10px; gap:8px}
+    #einstellungen .zeile > span{flex:0 0 70px}
+    #sheet{margin:5px auto}
   }
 </style>
 </head>
@@ -365,6 +394,9 @@
       <span class="farblbl">Größe</span>
       <input type="range" id="groesse" min="0" max="100" value="15" title="Größe der Markierung">
       <button class="btn klein" id="einstell" title="Einstellungen ein- und ausklappen">Einstellungen ▾</button>
+      <!-- Zweite Fassungsnummer: springt ein, wenn die Kopfzeile ausgeblendet
+           ist. Die Fassung muss IMMER irgendwo ablesbar sein. -->
+      <b class="fassung" id="fassungszeichen2" title="Fassung - antippen für Einzelheiten"></b>
     </div>
 
     <!-- Ausklappbarer Reiter: alles, was man selten braucht -->
@@ -390,6 +422,9 @@
       <label class="chk"><input type="checkbox" id="loose"> Trennzeichen egal (12/06 = 12-06 = 1206)</label>
       <div class="zeile knoepfe">
         <button class="btn" id="nurplan" title="Kopfzeile und Suchfeld ausblenden">Nur Plan</button>
+        <button class="btn" id="copy2" disabled title="Seitenliste in die Zwischenablage">Trefferliste kopieren</button>
+      </div>
+      <div class="zeile knoepfe">
         <button class="btn" id="infoauf" title="Zeigt, was gerade geladen ist">Was ist los?</button>
       </div>
       <div class="hint" id="hinweis"></div>
@@ -862,7 +897,7 @@ function search(){
     syncPageHits();
     renderResults();
     setStatus(pdfDoc.numPages + ' Seiten geladen.');
-    $('#copy').disabled = true;
+    setKopierKnopf(true);
     updateHitLabel();
     alleSeitenZeigen();          // ohne Suche wieder der ganze Plan
     return;
@@ -917,7 +952,7 @@ function search(){
   var nP = Object.keys(mitTreffer).length;
   if(hits.length){
     setStatus(hits.length + ' Treffer auf ' + nP + ' Seite' + (nP===1?'':'n') + '.');
-    $('#copy').disabled = false;
+    setKopierKnopf(false);
     /* Ab jetzt nur noch die Seiten mit Treffern zeigen - dazwischen gibt es
        nichts zu scrollen. Suchfeld leeren bringt den ganzen Plan zurück. */
     nurTreffer = true;
@@ -930,7 +965,7 @@ function search(){
                 'Frag bei der Planstelle nach einem PDF-Export direkt aus dem CAD-Programm, ' +
                 'dann funktioniert die Suche.';
     renderResults();
-    $('#copy').disabled = true;
+    setKopierKnopf(true);
     updateHitLabel();
     alleSeitenZeigen();
   } else {
@@ -939,7 +974,7 @@ function search(){
                 'Tipp: „Trennzeichen egal“ anhaken — dann wird auch <b>12-06</b> oder ' +
                 '<b>1206</b> gefunden. Oder nur einen Teil suchen, z. B. <b>12/</b>.';
     renderResults();
-    $('#copy').disabled = true;
+    setKopierKnopf(true);
     updateHitLabel();
     alleSeitenZeigen();
   }
@@ -965,8 +1000,12 @@ function renderResults(){
     var msg = emptyNote ||
       (pdfDoc ? 'Nummer eingeben und auf „Suchen“ tippen.' : 'Noch keine Suche.');
     box.innerHTML = '<div class="empty">' + msg + '</div>';
+    /* Am Handy ist der Platz zu kostbar für einen bloßen Hinweis - ohne
+       echte Meldung bleibt die Liste dort ganz weg. */
+    box.classList.toggle('leer', !emptyNote);
     return;
   }
+  box.classList.remove('leer');
   var byPage = [];
   hits.forEach(function(h, i){
     if(!byPage.length || byPage[byPage.length-1].page !== h.page){
@@ -1663,7 +1702,15 @@ stage.addEventListener('touchend', function(e){
   }
 }, { passive:false });
 
-$('#copy').onclick = function(){
+/* Beide Kopier-Knöpfe gemeinsam schalten: einer in der Kopfzeile (PC),
+   einer im Einstellungs-Reiter (Handy). */
+function setKopierKnopf(aus){
+  var a = $('#copy'), b = $('#copy2');
+  if(a) a.disabled = aus;
+  if(b) b.disabled = aus;
+}
+
+function trefferlisteKopieren(knopf){
   var byPage = {};
   hits.forEach(function(h){ byPage[h.page] = (byPage[h.page]||0)+1; });
   var seiten = Object.keys(byPage).map(Number).sort(function(a,b){ return a-b; });
@@ -1673,10 +1720,12 @@ $('#copy').onclick = function(){
             seiten.map(function(p){ return 'Seite ' + p + ' - ' + byPage[p] + ' Treffer'; }).join('\n') +
             '\n\nSeitenliste: ' + seiten.join(', ');
   navigator.clipboard.writeText(txt).then(function(){
-    var b = $('#copy'); b.textContent = 'kopiert ✓';
-    setTimeout(function(){ b.textContent = 'Trefferliste kopieren'; }, 1500);
+    knopf.textContent = 'kopiert ✓';
+    setTimeout(function(){ knopf.textContent = 'Trefferliste kopieren'; }, 1500);
   });
-};
+}
+$('#copy').onclick  = function(){ trefferlisteKopieren(this); };
+$('#copy2').onclick = function(){ trefferlisteKopieren(this); };
 
 /* ---------------- PDF fest einbauen ----------------
    Baut eine neue HTML-Datei, in der diese PDF als Text mitgespeichert ist.
@@ -1741,6 +1790,14 @@ $('#einstell').onclick = function(){
 $('#nurplan').onclick = function(){
   var an = document.body.classList.toggle('nurplan');
   this.textContent = an ? 'Suche zeigen' : 'Nur Plan';
+  /* Beim Einschalten den Reiter gleich mit zuklappen - sonst nimmt er
+     genau den Platz weg, den „Nur Plan" freimachen soll. */
+  if(an && !$('#einstellungen').hidden){
+    $('#einstellungen').hidden = true;
+    $('#einstell').textContent = 'Einstellungen ▾';
+    $('#einstell').classList.remove('auf');
+    try{ localStorage.setItem('planfinder-einstell', '0'); }catch(e){}
+  }
   try{ localStorage.setItem('planfinder-nurplan', an ? '1' : '0'); }catch(e){}
   layout();
 };
@@ -1916,7 +1973,7 @@ function appSymbol(){
    Sammelt die Angaben, die bei Problemen weiterhelfen, und kann den
    gesamten Zwischenspeicher löschen - das behebt fast alle Fälle, in denen
    das Handy an einer alten Fassung festhängt. */
-var FASSUNG = '2026-10-14-2';
+var FASSUNG = '2026-10-14-3';
 var DIAG = { plan: 'noch nichts geladen', sw: 'wird geprüft …', swFassung: '-' };
 
 /* Fassung sofort sichtbar machen - das ist die einzige Möglichkeit, von
@@ -1924,6 +1981,8 @@ var DIAG = { plan: 'noch nichts geladen', sw: 'wird geprüft …', swFassung: '-
 (function(){
   var zeichen = $('#fassungszeichen');
   if(zeichen) zeichen.textContent = FASSUNG;
+  var zeichen2 = $('#fassungszeichen2');
+  if(zeichen2) zeichen2.textContent = FASSUNG;
   /* Die Nummer in der Adresse hat ihren Zweck erfüllt - weg damit, sonst
      merkt sich der Startbildschirm eine Adresse, die nie aus dem Speicher
      bedient werden kann. */
@@ -1988,6 +2047,7 @@ function infoZeigen(){
 }
 $('#infoauf').onclick = infoZeigen;
 $('#fassungszeichen').onclick = infoZeigen;   // Fassungszeichen antippen reicht
+$('#fassungszeichen2').onclick = infoZeigen;
 $('#infozu').onclick = function(){ $('#info').hidden = true; };
 $('#infokopieren').onclick = function(){
   var b = this;
